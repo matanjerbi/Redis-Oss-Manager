@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(npx create-next-app@latest frontend --typescript --tailwind --app --no-eslint --src-dir --import-alias \"@/*\" --no-git)",
+      "Bash(npx create-next-app@latest frontend --typescript --tailwind --app --no-eslint --src-dir --import-alias \"@/*\" --no-git --yes)",
+      "Bash(npm install:*)",
+      "Bash(npm run:*)",
+      "Bash(python3.11 -m venv .venv)",
+      "Bash(source .venv/bin/activate)",
+      "Bash(createdb redis_manager)",
+      "Bash(curl -s http://localhost:8000/docs -o /dev/null -w \"Backend: %{http_code}\\\\n\")",
+      "Bash(curl -s http://localhost:3000 -o /dev/null -w \"Frontend: %{http_code}\\\\n\")",
+      "Bash(curl -s http://localhost:8000/ -o /dev/null -w \"%{http_code}\")",
+      "Bash(curl -s http://localhost:8000/api/clusters/ -w \"\\\\nStatus: %{http_code}\\\\n\")",
+      "Bash(xargs kill:*)",
+      "Bash(source /Users/matanjerbi/Desktop/redis-oss-manager/backend/.venv/bin/activate)",
+      "Bash(uvicorn app.main:app --port 8000)",
+      "Bash(curl -s http://localhost:8000/api/clusters/)",
+      "Bash(python3 -m json.tool echo \"---\" curl -s http://localhost:3000/overview -o /dev/null -w \"Frontend /overview: HTTP %{http_code}\\\\n\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -sv -X POST http://localhost:8000/api/clusters/ -H \"Content-Type: application/json\" -d '{\"\"\"\"name\"\"\"\":\"\"\"\"local-dev\"\"\"\",\"\"\"\"seed_nodes\"\"\"\":[\"\"\"\"127.0.0.1:7001\"\"\"\"],\"\"\"\"tenant_id\"\"\"\":\"\"\"\"dev\"\"\"\",\"\"\"\"description\"\"\"\":\"\"\"\"Local dev cluster\"\"\"\"}')",
+      "Bash(python3 -c \":*)",
+      "Bash(curl -s http://localhost:3000 -o /dev/null -w \"Frontend: HTTP %{http_code}\\\\n\")",
+      "Bash(curl -s http://localhost:8000/docs -o /dev/null -w \"API Docs: HTTP %{http_code}\\\\n\")",
+      "Bash(curl -s http://localhost:8000/api/clusters/ -w \" HTTP:%{http_code}\")",
+      "Bash(psql -l)",
+      "Bash(psql:*)",
+      "Bash(npx tsc:*)",
+      "Bash(curl:*)",
+      "Bash(/dev/null lsof:*)",
+      "Bash(/dev/null echo:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}
