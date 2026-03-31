@@ -25,13 +25,14 @@ from app.api.schemas.cluster import (
 from app.application.services.acl_service import AclService, AclUpsertRequest
 from app.application.services.cluster_service import ClusterService, CreateClusterRequest
 from app.application.services.config_service import ConfigService
+from app.application.services.slowlog_service import SlowlogService
 from app.domain.exceptions import (
     ClusterConnectionError,
     ClusterNotFoundError,
     RedisManagerError,
 )
 from app.domain.models import ClusterNode, ClusterTopology
-from app.api.dependencies import get_acl_service, get_cluster_service, get_config_service
+from app.api.dependencies import get_acl_service, get_cluster_service, get_config_service, get_slowlog_service
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 
@@ -276,6 +277,26 @@ async def get_config(
 ):
     try:
         return await svc.get_config(cluster_id, pattern)
+    except ClusterNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ------------------------------------------------------------------
+# Slow log
+# ------------------------------------------------------------------
+
+@router.get("/{cluster_id}/slowlog", response_model=dict)
+async def get_slowlog(
+    cluster_id: int,
+    count: int = Query(default=128, ge=1, le=1000),
+    svc: SlowlogService = Depends(get_slowlog_service),
+):
+    """
+    Return SLOWLOG GET <count> from every node as {address: [entry, ...]}.
+    Each entry: {id, start_time, duration, command, client_addr, client_name}
+    """
+    try:
+        return await svc.get_slowlog(cluster_id, count=count)
     except ClusterNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

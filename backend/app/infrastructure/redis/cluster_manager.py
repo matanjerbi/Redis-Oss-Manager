@@ -390,6 +390,58 @@ class ClusterManager:
         return results
 
     # ------------------------------------------------------------------
+    # Slow log
+    # ------------------------------------------------------------------
+
+    async def slowlog_get(self, count: int = 128) -> dict[str, list[dict]]:
+        """
+        Run SLOWLOG GET <count> on every node.
+
+        Returns {address: [entry, ...]} where each entry is a dict with:
+          id, timestamp, duration_us, args, client_addr, client_name
+        """
+        async with self._get_client() as client:
+            nodes: list[RedisClusterNode] = list(client.get_nodes())  # type: ignore[attr-defined]
+
+        results: dict[str, list[dict]] = {}
+
+        async def _slowlog_on_node(node: RedisClusterNode) -> None:
+            address = f"{node.host}:{node.port}"
+            import redis.asyncio as aioredis
+
+            try:
+                direct = aioredis.Redis(
+                    host=node.host,
+                    port=node.port,
+                    password=self.password,
+                    ssl=self.tls_enabled,
+                    socket_timeout=self.socket_timeout,
+                    decode_responses=True,
+                )
+                async with direct:
+                    raw: list = await direct.slowlog_get(num=count)
+                    entries = []
+                    for entry in raw:
+                        # redis-py returns SlowLogInfo namedtuple or dict
+                        if hasattr(entry, "_asdict"):
+                            entry = entry._asdict()
+                        entries.append({
+                            "id": entry.get("id", 0),
+                            "start_time": entry.get("start_time", 0),
+                            "duration": entry.get("duration", 0),
+                            "command": entry.get("command", []),
+                            "client_addr": entry.get("client_addr", ""),
+                            "client_name": entry.get("client_name", ""),
+                        })
+                    results[address] = entries
+            except (RedisConnectionError, ResponseError) as exc:
+                logger.warning("SLOWLOG GET failed on %s: %s", address, exc)
+                results[address] = []
+
+        await asyncio.gather(*[_slowlog_on_node(n) for n in nodes], return_exceptions=True)
+        return results
+
+    # ------------------------------------------------------------------
     # Namespace / key scanning
     # ------------------------------------------------------------------
 
