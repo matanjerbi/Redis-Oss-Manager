@@ -59,6 +59,19 @@ class NamespaceScanBody(BaseModel):
     max_keys: int = Field(default=200, gt=0, le=10_000)
 
 
+class UpdateSeedsBody(BaseModel):
+    seed_nodes: list[str] = Field(..., min_length=1)
+
+    @field_validator("seed_nodes")
+    @classmethod
+    def validate_seed_nodes(cls, nodes: list[str]) -> list[str]:
+        for node in nodes:
+            parts = node.rsplit(":", 1)
+            if len(parts) != 2 or not parts[1].isdigit():
+                raise ValueError(f"Invalid seed node '{node}'. Expected format: host:port")
+        return nodes
+
+
 # ------------------------------------------------------------------
 # Response schemas
 # ------------------------------------------------------------------

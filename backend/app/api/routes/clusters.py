@@ -21,6 +21,7 @@ from app.api.schemas.cluster import (
     NodeMemoryOut,
     NodeMetricsOut,
     SlotRangeOut,
+    UpdateSeedsBody,
 )
 from app.application.services.acl_service import AclService, AclUpsertRequest
 from app.application.services.cluster_service import ClusterService, CreateClusterRequest
@@ -143,6 +144,24 @@ async def get_cluster(
 ):
     try:
         config = await svc.get_cluster(cluster_id)
+    except ClusterNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return ClusterConfigOut(**config.__dict__)
+
+
+@router.patch("/{cluster_id}/seeds", response_model=ClusterConfigOut)
+async def update_seeds(
+    cluster_id: int,
+    body: UpdateSeedsBody,
+    svc: ClusterService = Depends(get_cluster_service),
+):
+    """
+    Replace the seed node list for an existing cluster and force a reconnect.
+    Use this to recover when the originally registered seed node is no longer
+    reachable (e.g. after a failover that promoted a different node to master).
+    """
+    try:
+        config = await svc.update_seeds(cluster_id, body.seed_nodes)
     except ClusterNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return ClusterConfigOut(**config.__dict__)

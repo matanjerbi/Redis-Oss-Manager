@@ -47,7 +47,10 @@ class ClusterService:
     # ------------------------------------------------------------------
 
     async def register_cluster(self, req: CreateClusterRequest) -> ClusterConfig:
-        """Persist metadata and open the connection pool entry."""
+        """
+        Persist metadata, open the connection pool entry, and immediately
+        discover all cluster nodes so the DB seed list is complete from day one.
+        """
         now = datetime.now(timezone.utc)
         config = ClusterConfig(
             id=0,  # filled by DB
@@ -64,6 +67,26 @@ class ClusterService:
         )
         saved = await self._repo.create(config)
         await self._pool.register(saved)
+
+        # Discover all cluster members immediately and persist them so that
+        # a future restart can reach the cluster even if the registered seed
+        # goes down.
+        try:
+            manager = await self._pool.get(saved.id)
+            topology = await manager.get_topology(cluster_name=saved.name)
+            all_nodes = sorted({f"{n.host}:{n.port}" for n in topology.nodes})
+            if all_nodes and set(all_nodes) != set(saved.seed_nodes):
+                saved = await self._repo.update(saved.id, seed_nodes=all_nodes)
+                logger.info(
+                    "Cluster '%s' — persisted %d discovered nodes as seeds",
+                    saved.name, len(all_nodes),
+                )
+        except Exception as exc:
+            logger.warning(
+                "Could not discover all nodes for cluster '%s' at registration: %s",
+                saved.name, exc,
+            )
+
         logger.info("Registered new cluster '%s' (id=%d)", saved.name, saved.id)
         return saved
 
@@ -77,6 +100,22 @@ class ClusterService:
         await self._repo.delete(cluster_id)
         await self._pool.deregister(cluster_id)
         logger.info("Removed cluster %d", cluster_id)
+
+    async def update_seeds(self, cluster_id: int, seed_nodes: list[str]) -> ClusterConfig:
+        """
+        Replace the seed list, force a reconnect via the new seeds, and
+        persist the result.  Returns the updated ClusterConfig.
+        """
+        config = await self._repo.update(cluster_id, seed_nodes=seed_nodes)
+
+        # Force a clean reconnect with the new seeds
+        await self._pool.deregister(cluster_id)
+        await self._pool.register(config)
+
+        logger.info(
+            "Updated seeds for cluster %d: %s", cluster_id, seed_nodes
+        )
+        return config
 
     # ------------------------------------------------------------------
     # Health / topology
