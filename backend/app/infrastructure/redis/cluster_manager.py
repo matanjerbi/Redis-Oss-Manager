@@ -92,27 +92,42 @@ class ClusterManager:
     # ------------------------------------------------------------------
 
     async def connect(self) -> None:
-        """Open the cluster connection. Call once at startup."""
+        """
+        Open the cluster connection.  Tries each seed node independently so
+        that a single downed seed does not prevent the connection from being
+        established against the surviving members of the cluster.
+        """
         if self._client is not None:
             return
 
-        startup_nodes = self._parse_seed_nodes()
-        try:
-            self._client = RedisCluster(
-                startup_nodes=startup_nodes,
-                password=self.password,
-                ssl=self.tls_enabled,
-                socket_timeout=self.socket_timeout,
-                socket_connect_timeout=self.socket_connect_timeout,
-                decode_responses=True,
-                require_full_coverage=False,
-                reinitialize_steps=5,
-                read_from_replicas=False,
-            )
-            await self._client.initialize()
-            logger.info("Connected to cluster %s", self.cluster_id)
-        except (RedisConnectionError, RedisClusterException) as exc:
-            raise ClusterConnectionError(self.cluster_id, exc) from exc
+        last_exc: Exception | None = None
+        for seed in self.seed_nodes:
+            seed_host, seed_port = seed.rsplit(":", 1)
+            startup_nodes = [RedisClusterNode(seed_host, int(seed_port))]
+            try:
+                client = RedisCluster(
+                    startup_nodes=startup_nodes,
+                    password=self.password,
+                    ssl=self.tls_enabled,
+                    socket_timeout=self.socket_timeout,
+                    socket_connect_timeout=self.socket_connect_timeout,
+                    decode_responses=True,
+                    require_full_coverage=False,
+                    reinitialize_steps=5,
+                    read_from_replicas=False,
+                )
+                await client.initialize()
+                self._client = client
+                logger.info("Connected to cluster %s via %s", self.cluster_id, seed)
+                return
+            except (RedisConnectionError, RedisClusterException) as exc:
+                logger.warning(
+                    "Could not connect to cluster %s via seed %s: %s",
+                    self.cluster_id, seed, exc,
+                )
+                last_exc = exc
+
+        raise ClusterConnectionError(self.cluster_id, last_exc) from last_exc
 
     async def disconnect(self) -> None:
         """Close all connections in the pool."""
@@ -162,13 +177,37 @@ class ClusterManager:
         """
         # Use a direct single-node connection so CLUSTER NODES returns the
         # raw text string (redis-py RedisCluster returns a dict instead).
-        seed_host, seed_port = self.seed_nodes[0].rsplit(":", 1)
-        try:
-            direct = self._make_direct_conn(seed_host, int(seed_port))
-            async with direct:
-                raw_nodes: str = await direct.execute_command("CLUSTER NODES")
-        except (RedisConnectionError, RedisTimeoutError) as exc:
-            raise ClusterConnectionError(self.cluster_id, exc) from exc
+        # Try seeds first, then fall back to nodes already known to the
+        # RedisCluster client — this lets us survive when the originally
+        # registered seed node is the one that went down.
+        raw_nodes: str | None = None
+        last_exc: Exception | None = None
+
+        candidate_addresses: list[str] = list(self.seed_nodes)
+
+        # Append any nodes the cluster client already knows about
+        if self._client is not None:
+            try:
+                for n in self._client.get_nodes():  # type: ignore[attr-defined]
+                    addr = f"{n.host}:{n.port}"
+                    if addr not in candidate_addresses:
+                        candidate_addresses.append(addr)
+            except Exception:
+                pass
+
+        for candidate in candidate_addresses:
+            try:
+                chost, cport_str = candidate.rsplit(":", 1)
+                direct = self._make_direct_conn(chost, int(cport_str))
+                async with direct:
+                    raw_nodes = await direct.execute_command("CLUSTER NODES")
+                break
+            except (RedisConnectionError, RedisTimeoutError) as exc:
+                logger.warning("Node %s unreachable for CLUSTER NODES: %s", candidate, exc)
+                last_exc = exc
+
+        if raw_nodes is None:
+            raise ClusterConnectionError(self.cluster_id, last_exc) from last_exc
 
         parsed_nodes = self._parse_cluster_nodes(raw_nodes)
 
