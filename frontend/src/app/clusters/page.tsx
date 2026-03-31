@@ -6,8 +6,9 @@ import { ClusterStatusBadge } from "@/components/ui/StatusBadge";
 import { RegisterClusterModal, type RegisterClusterForm } from "@/components/clusters/RegisterClusterModal";
 import { formatKeys, formatBytes } from "@/lib/utils";
 import type { ClusterConfig, ClusterTopology } from "@/lib/types";
+import { API_BASE } from "@/lib/api";
 
-const API = "http://localhost:8000";
+
 
 interface ClusterRow {
   config: ClusterConfig;
@@ -24,14 +25,14 @@ export default function ClustersPage() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/api/clusters/`);
+      const res = await fetch(`${API_BASE}/api/clusters/`);
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const configs: ClusterConfig[] = await res.json();
 
       // Fetch health for each cluster in parallel
       const topoResults = await Promise.allSettled(
         configs.map((c) =>
-          fetch(`${API}/api/clusters/${c.id}/health`).then((r) =>
+          fetch(`${API_BASE}/api/clusters/${c.id}/health`).then((r) =>
             r.ok ? r.json() : null
           )
         )
@@ -58,7 +59,7 @@ export default function ClustersPage() {
   }, [fetchClusters]);
 
   const handleRegister = async (form: RegisterClusterForm) => {
-    const res = await fetch(`${API}/api/clusters/`, {
+    const res = await fetch(`${API_BASE}/api/clusters/`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

@@ -352,11 +352,7 @@ async def scan_namespace(
     Returns at most max_keys results.
     """
     try:
-        config = await svc.get_cluster(cluster_id)
-        if cluster_id not in svc._pool:
-            await svc._pool.register(config)
-        manager = await svc._pool.get(cluster_id)
-        keys = await manager.scan_namespace(prefix=body.prefix, max_keys=body.max_keys)
+        keys = await svc.scan_namespace(cluster_id, prefix=body.prefix, max_keys=body.max_keys)
     except ClusterNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except RedisManagerError as exc:

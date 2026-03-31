@@ -33,7 +33,8 @@
       "Bash(/dev/null echo:*)",
       "Bash(git init:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(grep:*)"
     ]
   }
 }

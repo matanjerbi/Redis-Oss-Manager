@@ -2,8 +2,7 @@
 import { ChevronDown, ChevronRight, ExternalLink, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import Link from "next/link";
-import { cn } from "@/lib/utils";
-import { formatKeys, formatBytes } from "@/lib/utils";
+import { cn, formatKeys } from "@/lib/utils";
 import { ClusterStatusBadge } from "@/components/ui/StatusBadge";
 import { NodeCard } from "./NodeCard";
 import type { ClusterTopology } from "@/lib/types";

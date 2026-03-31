@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
 
+import redis.asyncio as aioredis
 from redis.asyncio.cluster import RedisCluster
 from redis.asyncio.cluster import ClusterNode as RedisClusterNode
 from redis.exceptions import (
@@ -137,6 +138,18 @@ class ClusterManager:
             await self.connect()
             yield self._client  # type: ignore[misc]
 
+    def _make_direct_conn(self, host: str, port: int) -> aioredis.Redis:
+        """Return a single-node async Redis connection using this cluster's credentials."""
+        return aioredis.Redis(
+            host=host,
+            port=port,
+            password=self.password,
+            ssl=self.tls_enabled,
+            socket_timeout=self.socket_timeout,
+            socket_connect_timeout=self.socket_connect_timeout,
+            decode_responses=True,
+        )
+
     # ------------------------------------------------------------------
     # Topology & health
     # ------------------------------------------------------------------
@@ -150,16 +163,8 @@ class ClusterManager:
         # Use a direct single-node connection so CLUSTER NODES returns the
         # raw text string (redis-py RedisCluster returns a dict instead).
         seed_host, seed_port = self.seed_nodes[0].rsplit(":", 1)
-        import redis.asyncio as aioredis
         try:
-            direct = aioredis.Redis(
-                host=seed_host,
-                port=int(seed_port),
-                password=self.password,
-                ssl=self.tls_enabled,
-                socket_timeout=self.socket_timeout,
-                decode_responses=True,
-            )
+            direct = self._make_direct_conn(seed_host, int(seed_port))
             async with direct:
                 raw_nodes: str = await direct.execute_command("CLUSTER NODES")
         except (RedisConnectionError, RedisTimeoutError) as exc:
@@ -205,16 +210,7 @@ class ClusterManager:
 
         address = f"{host}:{port}"
         try:
-            conn = aioredis.Redis(
-                host=host,
-                port=port,
-                password=self.password,
-                ssl=self.tls_enabled,
-                socket_timeout=self.socket_timeout,
-                socket_connect_timeout=self.socket_connect_timeout,
-                decode_responses=True,
-            )
-            async with conn:
+            async with self._make_direct_conn(host, port) as conn:
                 return await conn.info("all")  # type: ignore[return-value]
         except (RedisConnectionError, RedisTimeoutError, ResponseError) as exc:
             raise NodeUnreachableError(address, exc) from exc
@@ -241,17 +237,7 @@ class ClusterManager:
         async def _set_on_node(node: RedisClusterNode) -> None:
             address = f"{node.host}:{node.port}"
             try:
-                import redis.asyncio as aioredis
-
-                direct = aioredis.Redis(
-                    host=node.host,
-                    port=node.port,
-                    password=self.password,
-                    ssl=self.tls_enabled,
-                    socket_timeout=self.socket_timeout,
-                    decode_responses=True,
-                )
-                async with direct:
+                async with self._make_direct_conn(node.host, node.port) as direct:
                     await direct.execute_command("ACL SETUSER", rule.username, *args)
                 results[address] = "OK"
             except (RedisConnectionError, ResponseError) as exc:
@@ -279,18 +265,8 @@ class ClusterManager:
 
         async def _del_on_node(node: RedisClusterNode) -> None:
             address = f"{node.host}:{node.port}"
-            import redis.asyncio as aioredis
-
             try:
-                direct = aioredis.Redis(
-                    host=node.host,
-                    port=node.port,
-                    password=self.password,
-                    ssl=self.tls_enabled,
-                    socket_timeout=self.socket_timeout,
-                    decode_responses=True,
-                )
-                async with direct:
+                async with self._make_direct_conn(node.host, node.port) as direct:
                     await direct.execute_command("ACL DELUSER", username)
                 results[address] = "OK"
             except (RedisConnectionError, ResponseError) as exc:
@@ -325,18 +301,8 @@ class ClusterManager:
 
         async def _set_cfg_on_node(node: RedisClusterNode) -> None:
             address = f"{node.host}:{node.port}"
-            import redis.asyncio as aioredis
-
             try:
-                direct = aioredis.Redis(
-                    host=node.host,
-                    port=node.port,
-                    password=self.password,
-                    ssl=self.tls_enabled,
-                    socket_timeout=self.socket_timeout,
-                    decode_responses=True,
-                )
-                async with direct:
+                async with self._make_direct_conn(node.host, node.port) as direct:
                     await direct.config_set(parameter, value)
                 results[address] = "OK"
             except (RedisConnectionError, ResponseError) as exc:
@@ -369,18 +335,8 @@ class ClusterManager:
 
         async def _get_cfg_on_node(node: RedisClusterNode) -> None:
             address = f"{node.host}:{node.port}"
-            import redis.asyncio as aioredis
-
             try:
-                direct = aioredis.Redis(
-                    host=node.host,
-                    port=node.port,
-                    password=self.password,
-                    ssl=self.tls_enabled,
-                    socket_timeout=self.socket_timeout,
-                    decode_responses=True,
-                )
-                async with direct:
+                async with self._make_direct_conn(node.host, node.port) as direct:
                     results[address] = await direct.config_get(pattern)
             except (RedisConnectionError, ResponseError) as exc:
                 logger.warning("CONFIG GET failed on %s: %s", address, exc)
@@ -400,19 +356,9 @@ class ClusterManager:
         The command must be issued directly to the replica — it instructs
         that node to take over as master.  Returns "OK" on success.
         """
-        import redis.asyncio as aioredis
-
         address = f"{host}:{port}"
         try:
-            direct = aioredis.Redis(
-                host=host,
-                port=port,
-                password=self.password,
-                ssl=self.tls_enabled,
-                socket_timeout=self.socket_timeout,
-                decode_responses=True,
-            )
-            async with direct:
+            async with self._make_direct_conn(host, port) as direct:
                 args = ["FORCE"] if force else []
                 result = await direct.execute_command("CLUSTER", "FAILOVER", *args)
                 logger.info(
@@ -444,18 +390,8 @@ class ClusterManager:
 
         async def _slowlog_on_node(node: RedisClusterNode) -> None:
             address = f"{node.host}:{node.port}"
-            import redis.asyncio as aioredis
-
             try:
-                direct = aioredis.Redis(
-                    host=node.host,
-                    port=node.port,
-                    password=self.password,
-                    ssl=self.tls_enabled,
-                    socket_timeout=self.socket_timeout,
-                    decode_responses=True,
-                )
-                async with direct:
+                async with self._make_direct_conn(node.host, node.port) as direct:
                     raw: list = await direct.slowlog_get(num=count)
                     entries = []
                     for entry in raw:
@@ -506,18 +442,8 @@ class ClusterManager:
         async def _scan_node(node: RedisClusterNode) -> None:
             if len(all_keys) >= max_keys:
                 return
-            import redis.asyncio as aioredis
-
             try:
-                direct = aioredis.Redis(
-                    host=node.host,
-                    port=node.port,
-                    password=self.password,
-                    ssl=self.tls_enabled,
-                    socket_timeout=self.socket_timeout,
-                    decode_responses=True,
-                )
-                async with direct:
+                async with self._make_direct_conn(node.host, node.port) as direct:
                     cursor = 0
                     while True:
                         cursor, keys = await direct.scan(
