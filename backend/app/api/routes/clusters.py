@@ -27,13 +27,14 @@ from app.application.services.cluster_service import ClusterService, CreateClust
 from app.application.services.config_service import ConfigService
 from app.application.services.slowlog_service import SlowlogService
 from app.application.services.failover_service import FailoverService
+from app.application.services.metrics_service import MetricsService
 from app.domain.exceptions import (
     ClusterConnectionError,
     ClusterNotFoundError,
     RedisManagerError,
 )
 from app.domain.models import ClusterNode, ClusterTopology
-from app.api.dependencies import get_acl_service, get_cluster_service, get_config_service, get_slowlog_service, get_failover_service
+from app.api.dependencies import get_acl_service, get_cluster_service, get_config_service, get_slowlog_service, get_failover_service, get_metrics_service
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 
@@ -335,6 +336,42 @@ async def trigger_failover(
         raise HTTPException(status_code=502, detail=result.message)
 
     return {"success": True, "node_address": result.node_address, "message": result.message}
+
+
+# ------------------------------------------------------------------
+# Prometheus metrics
+# ------------------------------------------------------------------
+
+@router.get("/{cluster_id}/metrics")
+async def get_metrics(
+    cluster_id: int,
+    range: int = Query(default=3600, ge=300, le=86400, description="Range in seconds"),
+    svc: MetricsService = Depends(get_metrics_service),
+):
+    """
+    Return Prometheus time-series metrics for the cluster.
+    `range` controls how many seconds of history to fetch (default: 1h).
+    Response includes both instant snapshot values and series data.
+    """
+    snapshot = await svc.get_metrics(range_seconds=range)
+    return {
+        "job": snapshot.job,
+        "range_seconds": snapshot.range_seconds,
+        "current": {
+            "connected_clients": snapshot.connected_clients,
+            "memory_used_bytes": snapshot.memory_used_bytes,
+            "memory_max_bytes": snapshot.memory_max_bytes,
+            "keyspace_hits_total": snapshot.keyspace_hits_total,
+            "keyspace_misses_total": snapshot.keyspace_misses_total,
+        },
+        "series": [
+            {
+                "name": s.name,
+                "points": [{"ts": ts, "value": v} for ts, v in s.points],
+            }
+            for s in snapshot.series
+        ],
+    }
 
 
 # ------------------------------------------------------------------

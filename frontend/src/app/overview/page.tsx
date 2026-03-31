@@ -1,22 +1,31 @@
 "use client";
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { Server, CheckCircle2, Database, HardDrive, AlertTriangle, RefreshCw } from "lucide-react";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { ClusterSection } from "@/components/dashboard/ClusterSection";
 import { OpsChart } from "@/components/dashboard/OpsChart";
-import { generateMetricHistory } from "@/lib/mock-data";
 import { formatKeys, formatBytes, formatNumber } from "@/lib/utils";
 import { API_BASE } from "@/lib/api";
 import type { ClusterTopology } from "@/lib/types";
+import type { MetricPoint } from "@/lib/types";
+
+interface MetricSeries { name: string; points: { ts: number; value: number }[] }
+interface MetricsResponse { series: MetricSeries[] }
+
+function toChartPoints(series: MetricSeries | undefined): MetricPoint[] {
+  if (!series) return [];
+  return series.points.map(({ ts, value }) => ({
+    time: new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    value: Math.max(0, value),
+  }));
+}
 
 export default function OverviewPage() {
   const [clusters, setClusters] = useState<ClusterTopology[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastPolled, setLastPolled] = useState<Date | null>(null);
-
-  // Charts remain mock until Prometheus integration is complete
-  const opsData = useMemo(() => generateMetricHistory(1800, 24), []);
-  const memData = useMemo(() => generateMetricHistory(850, 24), []);
+  const [opsData, setOpsData] = useState<MetricPoint[]>([]);
+  const [memData, setMemData] = useState<MetricPoint[]>([]);
 
   const fetchAll = async () => {
     setLoading(true);
@@ -25,19 +34,36 @@ export default function OverviewPage() {
       if (!listRes.ok) return;
       const configs: { id: number }[] = await listRes.json();
 
-      const topologies = await Promise.allSettled(
-        configs.map((c) =>
-          fetch(`${API_BASE}/api/clusters/${c.id}/health`).then((r) =>
-            r.ok ? (r.json() as Promise<ClusterTopology>) : null
+      const [topologies, firstMetrics] = await Promise.all([
+        Promise.allSettled(
+          configs.map((c) =>
+            fetch(`${API_BASE}/api/clusters/${c.id}/health`).then((r) =>
+              r.ok ? (r.json() as Promise<ClusterTopology>) : null
+            )
           )
-        )
-      );
+        ),
+        configs[0]
+          ? fetch(`${API_BASE}/api/clusters/${configs[0].id}/metrics?range=3600`)
+              .then((r) => (r.ok ? (r.json() as Promise<MetricsResponse>) : null))
+              .catch(() => null)
+          : Promise.resolve(null),
+      ]);
 
       setClusters(
         topologies
           .filter((r): r is PromiseFulfilledResult<ClusterTopology> => r.status === "fulfilled" && r.value !== null)
           .map((r) => r.value)
       );
+
+      if (firstMetrics) {
+        const opsSeries = firstMetrics.series.find((s) => s.name === "ops_per_sec");
+        const memSeries = firstMetrics.series.find((s) => s.name === "memory_used_bytes");
+        setOpsData(toChartPoints(opsSeries));
+        setMemData(
+          toChartPoints(memSeries).map((p) => ({ ...p, value: p.value / 1_048_576 }))
+        );
+      }
+
       setLastPolled(new Date());
     } finally {
       setLoading(false);
