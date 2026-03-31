@@ -127,7 +127,7 @@ export default function ClusterDetailPage({
           </div>
 
           {/* Tab content */}
-          {activeTab === "topology" && <TopologyTab topology={topology} />}
+          {activeTab === "topology" && <TopologyTab topology={topology} clusterId={id} />}
           {activeTab === "acl" && <AclTab clusterId={id} />}
           {activeTab === "config" && <ConfigTab clusterId={id} />}
           {activeTab === "slowlog" && <SlowLogTab clusterId={id} />}
