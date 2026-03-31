@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from app.api.schemas.cluster import (
     AclOperationOut,
     AclUpsertBody,
+    AddNodeBody,
     ClusterConfigOut,
     ClusterNodeOut,
     ClusterTopologyOut,
@@ -30,13 +31,14 @@ from app.application.services.slowlog_service import SlowlogService
 from app.application.services.failover_service import FailoverService
 from app.application.services.metrics_service import MetricsService
 from app.application.services.node_ops_service import NodeOpsService
+from app.application.services.add_node_service import AddNodeService
 from app.domain.exceptions import (
     ClusterConnectionError,
     ClusterNotFoundError,
     RedisManagerError,
 )
 from app.domain.models import ClusterNode, ClusterTopology
-from app.api.dependencies import get_acl_service, get_cluster_service, get_config_service, get_slowlog_service, get_failover_service, get_metrics_service, get_node_ops_service
+from app.api.dependencies import get_acl_service, get_cluster_service, get_config_service, get_slowlog_service, get_failover_service, get_metrics_service, get_node_ops_service, get_add_node_service
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 
@@ -356,6 +358,44 @@ async def trigger_failover(
         raise HTTPException(status_code=502, detail=result.message)
 
     return {"success": True, "node_address": result.node_address, "message": result.message}
+
+
+# ------------------------------------------------------------------
+# Node operations — Add node
+# ------------------------------------------------------------------
+
+@router.post("/{cluster_id}/nodes/add")
+async def add_node(
+    cluster_id: int,
+    body: AddNodeBody,
+    svc: AddNodeService = Depends(get_add_node_service),
+):
+    """
+    Add a running Redis node to the cluster.
+    role=replica: joins as replica of master_id.
+    role=master:  joins as new master with automatic slot resharding.
+    The target node must already be running (standalone or fresh cluster node).
+    """
+    try:
+        if body.role == "replica":
+            result = await svc.add_replica(
+                cluster_id, host=body.host, port=body.port, master_id=body.master_id
+            )
+        else:
+            result = await svc.add_master(cluster_id, host=body.host, port=body.port)
+    except ClusterNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if not result.success:
+        raise HTTPException(status_code=502, detail=result.message)
+    return {
+        "success": True,
+        "message": result.message,
+        "node_id": result.node_id,
+        "slots_migrated": result.slots_migrated,
+    }
 
 
 # ------------------------------------------------------------------

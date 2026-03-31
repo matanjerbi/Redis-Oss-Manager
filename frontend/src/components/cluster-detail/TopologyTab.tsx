@@ -1,6 +1,8 @@
 "use client";
-import { AlertTriangle, CheckCircle2, Database, HardDrive, Server } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, CheckCircle2, Database, HardDrive, PlusCircle, Server } from "lucide-react";
 import { NodeCard } from "@/components/dashboard/NodeCard";
+import { AddNodeModal } from "@/components/cluster-detail/AddNodeModal";
 import { formatKeys, formatBytes, formatNumber } from "@/lib/utils";
 import type { ClusterTopology } from "@/lib/types";
 import { API_BASE } from "@/lib/api";
@@ -13,6 +15,8 @@ interface Props {
 }
 
 export function TopologyTab({ topology, clusterId }: Props) {
+  const [showAddNode, setShowAddNode] = useState(false);
+
   const handleFailover = async (nodeAddress: string, force: boolean) => {
     const encoded = encodeURIComponent(nodeAddress);
     const res = await fetch(
@@ -53,6 +57,14 @@ export function TopologyTab({ topology, clusterId }: Props) {
 
   return (
     <div className="flex flex-col gap-6">
+      {showAddNode && (
+        <AddNodeModal
+          clusterId={clusterId}
+          masters={masters}
+          onClose={() => setShowAddNode(false)}
+          onSuccess={() => { setShowAddNode(false); window.location.reload(); }}
+        />
+      )}
       {/* Stats */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {[
@@ -111,6 +123,15 @@ export function TopologyTab({ topology, clusterId }: Props) {
           <span className="rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-[#D2232A]">
             {masters.length}
           </span>
+          <div className="ml-auto">
+            <button
+              onClick={() => setShowAddNode(true)}
+              className="flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-xs font-medium text-gray-600 hover:border-[#D2232A] hover:text-[#D2232A] transition"
+            >
+              <PlusCircle className="h-3.5 w-3.5" />
+              Add Node
+            </button>
+          </div>
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
           {masters.map((node) => (

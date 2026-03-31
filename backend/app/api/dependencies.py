@@ -15,6 +15,7 @@ from app.application.services.slowlog_service import SlowlogService
 from app.application.services.failover_service import FailoverService
 from app.application.services.metrics_service import MetricsService
 from app.application.services.node_ops_service import NodeOpsService
+from app.application.services.add_node_service import AddNodeService
 from app.infrastructure.database.repository import ClusterRepository
 from app.infrastructure.redis.connection_pool import cluster_pool
 
@@ -57,3 +58,7 @@ async def get_metrics_service() -> MetricsService:
 
 async def get_node_ops_service() -> NodeOpsService:
     return NodeOpsService(pool=cluster_pool)
+
+
+async def get_add_node_service() -> AddNodeService:
+    return AddNodeService(pool=cluster_pool)

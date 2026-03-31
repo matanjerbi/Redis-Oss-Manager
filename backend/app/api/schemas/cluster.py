@@ -72,6 +72,20 @@ class UpdateSeedsBody(BaseModel):
         return nodes
 
 
+class AddNodeBody(BaseModel):
+    host: str = Field(..., min_length=1)
+    port: int = Field(..., gt=0, lt=65536)
+    role: str = Field(..., pattern="^(replica|master)$")
+    master_id: str | None = None  # required when role == "replica"
+
+    @field_validator("master_id")
+    @classmethod
+    def master_id_required_for_replica(cls, v, info):
+        if info.data.get("role") == "replica" and not v:
+            raise ValueError("master_id is required when role is 'replica'")
+        return v
+
+
 # ------------------------------------------------------------------
 # Response schemas
 # ------------------------------------------------------------------

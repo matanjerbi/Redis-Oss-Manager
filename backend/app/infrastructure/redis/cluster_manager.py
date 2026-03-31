@@ -493,6 +493,219 @@ class ClusterManager:
             raise ClusterConnectionError(self.cluster_id, exc) from exc
 
     # ------------------------------------------------------------------
+    # Add node — Replica or Master with resharding
+    # ------------------------------------------------------------------
+
+    async def add_node_as_replica(
+        self, host: str, port: int, master_id: str
+    ) -> str:
+        """
+        Join a new node to the cluster as a replica.
+        Steps:
+          1. CLUSTER MEET from any healthy node
+          2. Wait for the new node to appear in CLUSTER NODES
+          3. CLUSTER REPLICATE <master_id> on the new node
+        """
+        address = f"{host}:{port}"
+
+        # Step 1: meet
+        async with self._get_client() as client:
+            nodes: list[RedisClusterNode] = list(client.get_nodes())
+        meet_node = nodes[0]
+        async with self._make_direct_conn(meet_node.host, meet_node.port) as conn:
+            await conn.execute_command("CLUSTER", "MEET", host, str(port))
+        logger.info("CLUSTER MEET %s from %s:%s", address, meet_node.host, meet_node.port)
+
+        # Step 2: wait for node to appear (up to 10s)
+        for _ in range(10):
+            await asyncio.sleep(1.0)
+            async with self._make_direct_conn(host, port) as conn:
+                try:
+                    info = await conn.execute_command("CLUSTER", "INFO")
+                    if "cluster_state:ok" in info or "cluster_state:fail" in info:
+                        break
+                except Exception:
+                    pass
+
+        # Step 3: replicate
+        await asyncio.sleep(1.0)
+        async with self._make_direct_conn(host, port) as conn:
+            await conn.execute_command("CLUSTER", "REPLICATE", master_id)
+        logger.info("CLUSTER REPLICATE %s on %s", master_id, address)
+        return "OK"
+
+    async def add_node_as_master(
+        self, host: str, port: int
+    ) -> dict[str, object]:
+        """
+        Join a new node to the cluster as a master and rebalance slots.
+        Steps:
+          1. CLUSTER MEET
+          2. Wait for the node to join and get its node_id
+          3. Calculate slots to migrate (16384 / new_master_count each)
+          4. Migrate slots from existing masters to the new node
+        Returns {"node_id": str, "slots_migrated": int}
+        """
+        address = f"{host}:{port}"
+
+        # Step 1: meet
+        async with self._get_client() as client:
+            existing_nodes: list[RedisClusterNode] = list(client.get_nodes())
+        meet_node = existing_nodes[0]
+        async with self._make_direct_conn(meet_node.host, meet_node.port) as conn:
+            await conn.execute_command("CLUSTER", "MEET", host, str(port))
+        logger.info("CLUSTER MEET %s from %s:%s", address, meet_node.host, meet_node.port)
+
+        # Step 2: wait for node to appear and get its node_id
+        new_node_id: str | None = None
+        for _ in range(15):
+            await asyncio.sleep(1.0)
+            try:
+                async with self._make_direct_conn(meet_node.host, meet_node.port) as conn:
+                    raw = await conn.execute_command("CLUSTER", "NODES")
+                for line in (raw if isinstance(raw, str) else "").strip().splitlines():
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        addr_part = parts[1].split("@")[0]
+                        if addr_part == address:
+                            new_node_id = parts[0]
+                            break
+                if new_node_id:
+                    break
+            except Exception:
+                pass
+
+        if not new_node_id:
+            raise ClusterConnectionError(
+                self.cluster_id,
+                Exception(f"New node {address} did not appear in CLUSTER NODES within 15s"),
+            )
+        logger.info("New node %s has id %s", address, new_node_id)
+
+        # Step 3: calculate slots per master after adding new node
+        # Get current master->slots mapping from CLUSTER NODES
+        master_slots: dict[str, list[int]] = {}  # node_id -> list of slot numbers
+        async with self._make_direct_conn(meet_node.host, meet_node.port) as conn:
+            raw = await conn.execute_command("CLUSTER", "NODES")
+        for line in (raw if isinstance(raw, str) else "").strip().splitlines():
+            parts = line.split()
+            if len(parts) < 8:
+                continue
+            nid = parts[0]
+            flags = parts[2].split(",")
+            if "master" not in flags or nid == new_node_id:
+                continue
+            slots: list[int] = []
+            for token in parts[8:]:
+                if token.startswith("["):
+                    continue
+                if "-" in token:
+                    s, e = token.split("-")
+                    slots.extend(range(int(s), int(e) + 1))
+                else:
+                    try:
+                        slots.append(int(token))
+                    except ValueError:
+                        pass
+            master_slots[nid] = slots
+
+        num_masters = len(master_slots) + 1  # including the new one
+        target_per_master = 16384 // num_masters
+        total_migrated = 0
+
+        # Step 4: migrate slots from each existing master
+        for source_id, slots in master_slots.items():
+            # Find the source node address from existing_nodes
+            source_node = next(
+                (n for n in existing_nodes
+                 if self._get_node_id_for(n, existing_nodes) == source_id),
+                None,
+            )
+            if source_node is None:
+                # fallback: re-query
+                async with self._make_direct_conn(meet_node.host, meet_node.port) as conn:
+                    raw2 = await conn.execute_command("CLUSTER", "NODES")
+                for line in (raw2 if isinstance(raw2, str) else "").strip().splitlines():
+                    parts2 = line.split()
+                    if len(parts2) >= 2 and parts2[0] == source_id:
+                        addr = parts2[1].split("@")[0]
+                        sh, sp = addr.rsplit(":", 1)
+                        source_node = type("N", (), {"host": sh, "port": int(sp)})()
+                        break
+
+            if source_node is None:
+                continue
+
+            give_count = len(slots) - target_per_master
+            if give_count <= 0:
+                continue
+            slots_to_give = slots[:give_count]
+
+            for slot in slots_to_give:
+                await self._migrate_slot(
+                    source_host=source_node.host,
+                    source_port=source_node.port,
+                    source_id=source_id,
+                    target_host=host,
+                    target_port=port,
+                    target_id=new_node_id,
+                    slot=slot,
+                    all_nodes=existing_nodes,
+                )
+                total_migrated += 1
+
+        logger.info("Resharding complete: %d slots migrated to %s", total_migrated, address)
+        return {"node_id": new_node_id, "slots_migrated": total_migrated}
+
+    async def _migrate_slot(
+        self,
+        source_host: str,
+        source_port: int,
+        source_id: str,
+        target_host: str,
+        target_port: int,
+        target_id: str,
+        slot: int,
+        all_nodes: list,
+    ) -> None:
+        """Migrate a single slot from source to target."""
+        async with self._make_direct_conn(source_host, source_port) as src:
+            await src.execute_command("CLUSTER", "SETSLOT", slot, "MIGRATING", target_id)
+
+        async with self._make_direct_conn(target_host, target_port) as tgt:
+            await tgt.execute_command("CLUSTER", "SETSLOT", slot, "IMPORTING", source_id)
+
+        # Migrate all keys in this slot
+        async with self._make_direct_conn(source_host, source_port) as src:
+            while True:
+                keys = await src.execute_command("CLUSTER", "GETKEYSINSLOT", slot, 100)
+                if not keys:
+                    break
+                await src.execute_command(
+                    "MIGRATE", target_host, target_port, "", 0, 5000,
+                    "REPLACE", "KEYS", *keys,
+                )
+
+        # Finalize on all nodes
+        all_addresses = [(source_host, source_port), (target_host, target_port)]
+        for n in all_nodes:
+            addr = (n.host, n.port)
+            if addr not in all_addresses:
+                all_addresses.append(addr)
+        for h, p in all_addresses:
+            try:
+                async with self._make_direct_conn(h, p) as conn:
+                    await conn.execute_command("CLUSTER", "SETSLOT", slot, "NODE", target_id)
+            except Exception as exc:
+                logger.warning("SETSLOT NODE failed on %s:%s: %s", h, p, exc)
+
+    @staticmethod
+    def _get_node_id_for(node, all_nodes) -> str:
+        """Best-effort: return the node_id for a RedisClusterNode. Falls back to empty string."""
+        # RedisClusterNode in redis-py may expose .name or .node_id
+        return getattr(node, "name", "") or getattr(node, "node_id", "")
+
+    # ------------------------------------------------------------------
     # Slow log
     # ------------------------------------------------------------------
 
