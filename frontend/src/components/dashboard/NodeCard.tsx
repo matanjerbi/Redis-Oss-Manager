@@ -11,6 +11,8 @@ import {
   Loader2,
   CheckCircle2,
   XCircle,
+  Trash2,
+  RotateCcw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatKeys, formatUptime, formatNumber } from "@/lib/utils";
@@ -22,13 +24,32 @@ interface NodeCardProps {
   node: ClusterNode;
   masterAddress?: string;
   onFailover?: (nodeAddress: string, force: boolean) => Promise<void>;
+  onForget?: (nodeId: string) => Promise<void>;
+  onRejoin?: (nodeAddress: string, masterId?: string) => Promise<void>;
 }
 
-export function NodeCard({ node, masterAddress, onFailover }: NodeCardProps) {
+export function NodeCard({ node, masterAddress, onFailover, onForget, onRejoin }: NodeCardProps) {
   const m = node.metrics;
   const isReplica = node.role === "slave";
+
   const [failState, setFailState] = useState<"idle" | "confirm" | "loading" | "ok" | "error">("idle");
   const [failError, setFailError] = useState<string | null>(null);
+
+  const [forgetState, setForgetState] = useState<"idle" | "confirm" | "loading" | "ok" | "error">("idle");
+  const [forgetError, setForgetError] = useState<string | null>(null);
+
+  const [rejoinState, setRejoinState] = useState<"idle" | "confirm" | "loading" | "ok" | "error">("idle");
+  const [rejoinError, setRejoinError] = useState<string | null>(null);
+
+  // Determine whether to show Forget and Rejoin buttons
+  const showForget =
+    onForget &&
+    !node.is_healthy &&
+    (node.flags.some((f) => f === "fail" || f === "noaddr") ||
+      node.status === "fail" ||
+      node.status === "pfail");
+
+  const showRejoin = onRejoin && !node.is_healthy && node.status === "disconnected";
 
   const handleFailover = async (force: boolean) => {
     if (!onFailover) return;
@@ -42,6 +63,36 @@ export function NodeCard({ node, masterAddress, onFailover }: NodeCardProps) {
       setFailError(err instanceof Error ? err.message : "Failover failed");
       setFailState("error");
       setTimeout(() => setFailState("idle"), 4000);
+    }
+  };
+
+  const handleForget = async () => {
+    if (!onForget) return;
+    setForgetState("loading");
+    setForgetError(null);
+    try {
+      await onForget(node.node_id);
+      setForgetState("ok");
+      setTimeout(() => setForgetState("idle"), 3000);
+    } catch (err) {
+      setForgetError(err instanceof Error ? err.message : "Forget failed");
+      setForgetState("error");
+      setTimeout(() => setForgetState("idle"), 4000);
+    }
+  };
+
+  const handleRejoin = async () => {
+    if (!onRejoin) return;
+    setRejoinState("loading");
+    setRejoinError(null);
+    try {
+      await onRejoin(node.address, node.master_id ?? undefined);
+      setRejoinState("ok");
+      setTimeout(() => setRejoinState("idle"), 3000);
+    } catch (err) {
+      setRejoinError(err instanceof Error ? err.message : "Rejoin failed");
+      setRejoinState("error");
+      setTimeout(() => setRejoinState("idle"), 4000);
     }
   };
 
@@ -88,8 +139,63 @@ export function NodeCard({ node, masterAddress, onFailover }: NodeCardProps) {
               </p>
             )}
           </div>
-          <RoleBadge role={node.role} />
+          <div className="flex items-center gap-1.5">
+            {/* Forget button — shown in header when node is unhealthy with fail/noaddr flags */}
+            {showForget && forgetState === "idle" && (
+              <button
+                onClick={() => setForgetState("confirm")}
+                title="Forget this node from the cluster"
+                className="rounded-md border border-red-200 p-1 text-red-400 transition hover:border-red-400 hover:bg-red-50 hover:text-red-600"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            )}
+            {showForget && forgetState === "loading" && (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-red-400" />
+            )}
+            {showForget && forgetState === "ok" && (
+              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+            )}
+            {showForget && forgetState === "error" && (
+              <XCircle className="h-3.5 w-3.5 text-red-500" />
+            )}
+            <RoleBadge role={node.role} />
+          </div>
         </div>
+
+        {/* Forget confirm dialog */}
+        {showForget && forgetState === "confirm" && (
+          <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-2.5">
+            <p className="mb-2 text-[11px] font-medium text-red-800">
+              Forget <span className="font-mono">{node.node_id.slice(0, 8)}…</span> from the cluster?
+            </p>
+            <div className="flex gap-1.5">
+              <button
+                onClick={handleForget}
+                className="flex-1 rounded-md bg-red-500 py-1 text-[11px] font-semibold text-white hover:bg-red-600"
+              >
+                Forget
+              </button>
+              <button
+                onClick={() => setForgetState("idle")}
+                className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Forget error */}
+        {showForget && forgetState === "error" && (
+          <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] text-red-700">
+            <div className="flex items-center gap-1 font-medium">
+              <XCircle className="h-3 w-3" />
+              Forget failed
+            </div>
+            {forgetError && <p className="mt-0.5 text-red-500">{forgetError}</p>}
+          </div>
+        )}
 
         {/* Offline state */}
         {!node.is_healthy && (
@@ -98,6 +204,63 @@ export function NodeCard({ node, masterAddress, onFailover }: NodeCardProps) {
             <span className="text-xs font-medium text-red-600 capitalize">
               {node.status}
             </span>
+
+            {/* Rejoin button inside the offline state section */}
+            {showRejoin && rejoinState === "idle" && (
+              <button
+                onClick={() => setRejoinState("confirm")}
+                className="ml-auto flex items-center gap-1 rounded-md border border-red-200 px-2 py-0.5 text-[11px] font-medium text-red-600 transition hover:border-red-400 hover:bg-red-100"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Reset & Rejoin
+              </button>
+            )}
+            {showRejoin && rejoinState === "loading" && (
+              <div className="ml-auto flex items-center gap-1 text-[11px] text-red-500">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Rejoining…
+              </div>
+            )}
+            {showRejoin && rejoinState === "ok" && (
+              <div className="ml-auto flex items-center gap-1 text-[11px] font-medium text-emerald-600">
+                <CheckCircle2 className="h-3 w-3" />
+                Rejoined
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Rejoin confirm dialog */}
+        {showRejoin && rejoinState === "confirm" && (
+          <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-2.5">
+            <p className="mb-2 text-[11px] font-medium text-red-800">
+              Reset &amp; rejoin <span className="font-mono">{node.address}</span>?
+            </p>
+            <div className="flex gap-1.5">
+              <button
+                onClick={handleRejoin}
+                className="flex-1 rounded-md bg-red-500 py-1 text-[11px] font-semibold text-white hover:bg-red-600"
+              >
+                Rejoin
+              </button>
+              <button
+                onClick={() => setRejoinState("idle")}
+                className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Rejoin error */}
+        {showRejoin && rejoinState === "error" && (
+          <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] text-red-700">
+            <div className="flex items-center gap-1 font-medium">
+              <XCircle className="h-3 w-3" />
+              Rejoin failed
+            </div>
+            {rejoinError && <p className="mt-0.5 text-red-500">{rejoinError}</p>}
           </div>
         )}
 

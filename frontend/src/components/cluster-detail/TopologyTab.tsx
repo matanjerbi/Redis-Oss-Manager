@@ -24,6 +24,28 @@ export function TopologyTab({ topology, clusterId }: Props) {
       throw new Error(body.detail ?? `Server error ${res.status}`);
     }
   };
+
+  const handleForget = async (nodeId: string) => {
+    const res = await fetch(
+      `${API_BASE}/api/clusters/${clusterId}/nodes/${encodeURIComponent(nodeId)}/forget`,
+      { method: "POST" }
+    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail ?? `Server error ${res.status}`);
+    }
+  };
+
+  const handleRejoin = async (nodeAddress: string, masterId?: string) => {
+    const encoded = encodeURIComponent(nodeAddress);
+    const url = `${API_BASE}/api/clusters/${clusterId}/nodes/${encoded}/rejoin${masterId ? `?master_id=${masterId}` : ""}`;
+    const res = await fetch(url, { method: "POST" });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail ?? `Server error ${res.status}`);
+    }
+  };
+
   const masters = topology.nodes.filter((n) => n.role === "master");
   const replicas = topology.nodes.filter((n) => n.role === "slave");
   const masterMap = new Map(masters.map((n) => [n.node_id, n.address]));
@@ -92,7 +114,12 @@ export function TopologyTab({ topology, clusterId }: Props) {
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
           {masters.map((node) => (
-            <NodeCard key={node.node_id} node={node} />
+            <NodeCard
+              key={node.node_id}
+              node={node}
+              onForget={handleForget}
+              onRejoin={handleRejoin}
+            />
           ))}
         </div>
       </div>
@@ -113,6 +140,8 @@ export function TopologyTab({ topology, clusterId }: Props) {
                 node={node}
                 masterAddress={node.master_id ? masterMap.get(node.master_id) : undefined}
                 onFailover={handleFailover}
+                onForget={handleForget}
+                onRejoin={handleRejoin}
               />
             ))}
           </div>

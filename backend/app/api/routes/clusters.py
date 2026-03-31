@@ -29,13 +29,14 @@ from app.application.services.config_service import ConfigService
 from app.application.services.slowlog_service import SlowlogService
 from app.application.services.failover_service import FailoverService
 from app.application.services.metrics_service import MetricsService
+from app.application.services.node_ops_service import NodeOpsService
 from app.domain.exceptions import (
     ClusterConnectionError,
     ClusterNotFoundError,
     RedisManagerError,
 )
 from app.domain.models import ClusterNode, ClusterTopology
-from app.api.dependencies import get_acl_service, get_cluster_service, get_config_service, get_slowlog_service, get_failover_service, get_metrics_service
+from app.api.dependencies import get_acl_service, get_cluster_service, get_config_service, get_slowlog_service, get_failover_service, get_metrics_service, get_node_ops_service
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 
@@ -355,6 +356,55 @@ async def trigger_failover(
         raise HTTPException(status_code=502, detail=result.message)
 
     return {"success": True, "node_address": result.node_address, "message": result.message}
+
+
+# ------------------------------------------------------------------
+# Node operations — Forget & Rejoin
+# ------------------------------------------------------------------
+
+@router.post("/{cluster_id}/nodes/{node_id}/forget")
+async def forget_node(
+    cluster_id: int,
+    node_id: str,
+    svc: NodeOpsService = Depends(get_node_ops_service),
+):
+    """
+    Broadcast CLUSTER FORGET <node_id> to every healthy node.
+    Use this to remove a dead/ghost node from the cluster's memory.
+    """
+    try:
+        result = await svc.forget_node(cluster_id, node_id)
+    except ClusterNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not result.success:
+        raise HTTPException(status_code=502, detail=result.message)
+    return {"success": True, "node_id": node_id, "node_results": result.node_results}
+
+
+@router.post("/{cluster_id}/nodes/{node_address}/rejoin")
+async def rejoin_node(
+    cluster_id: int,
+    node_address: str,
+    master_id: str | None = Query(default=None),
+    svc: NodeOpsService = Depends(get_node_ops_service),
+):
+    """
+    CLUSTER RESET HARD on the target node, then CLUSTER MEET from a healthy
+    node, then optionally CLUSTER REPLICATE <master_id>.
+    Use this to recover a node that came back with stale cluster state.
+    """
+    try:
+        host, port_str = node_address.rsplit(":", 1)
+        port = int(port_str)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid node address: {node_address}")
+    try:
+        result = await svc.rejoin_node(cluster_id, host=host, port=port, master_id=master_id)
+    except ClusterNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not result.success:
+        raise HTTPException(status_code=502, detail=result.message)
+    return {"success": True, "node_address": node_address, "message": result.message}
 
 
 # ------------------------------------------------------------------

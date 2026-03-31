@@ -425,6 +425,74 @@ class ClusterManager:
             raise ClusterConnectionError(self.cluster_id, exc) from exc
 
     # ------------------------------------------------------------------
+    # Node operations — Forget & Rejoin
+    # ------------------------------------------------------------------
+
+    async def forget_node(self, node_id: str) -> dict[str, str]:
+        """
+        Run CLUSTER FORGET <node_id> on every healthy (connected) node
+        except the node being forgotten itself.
+        Returns {address: "OK" | error_message}.
+        """
+        async with self._get_client() as client:
+            nodes: list[RedisClusterNode] = list(client.get_nodes())
+
+        results: dict[str, str] = {}
+
+        async def _forget_on_node(node: RedisClusterNode) -> None:
+            address = f"{node.host}:{node.port}"
+            try:
+                async with self._make_direct_conn(node.host, node.port) as direct:
+                    await direct.execute_command("CLUSTER", "FORGET", node_id)
+                results[address] = "OK"
+            except (RedisConnectionError, ResponseError) as exc:
+                logger.warning("CLUSTER FORGET failed on %s: %s", address, exc)
+                results[address] = str(exc)
+
+        await asyncio.gather(*[_forget_on_node(n) for n in nodes], return_exceptions=True)
+        return results
+
+    async def rejoin_node(self, host: str, port: int, master_id: str | None = None) -> str:
+        """
+        Reset a stale node and rejoin it to the cluster.
+        Steps:
+          1. CLUSTER RESET HARD on the target node
+          2. CLUSTER MEET <host> <port> from the first healthy node
+          3. If master_id given: wait briefly then CLUSTER REPLICATE <master_id>
+        Returns a status string.
+        """
+        address = f"{host}:{port}"
+        try:
+            # Step 1: hard reset
+            async with self._make_direct_conn(host, port) as direct:
+                await direct.execute_command("CLUSTER", "RESET", "HARD")
+                logger.info("CLUSTER RESET HARD on %s", address)
+
+            # Step 2: meet from a healthy node
+            async with self._get_client() as client:
+                nodes: list[RedisClusterNode] = list(client.get_nodes())
+            healthy = [n for n in nodes if f"{n.host}:{n.port}" != address]
+            if not healthy:
+                raise ClusterConnectionError(self.cluster_id, Exception("No healthy nodes to meet from"))
+
+            meet_node = healthy[0]
+            async with self._make_direct_conn(meet_node.host, meet_node.port) as direct:
+                await direct.execute_command("CLUSTER", "MEET", host, str(port))
+                logger.info("CLUSTER MEET %s from %s:%s", address, meet_node.host, meet_node.port)
+
+            # Step 3: replicate if master_id provided
+            if master_id:
+                await asyncio.sleep(1.0)  # let the node join first
+                async with self._make_direct_conn(host, port) as direct:
+                    await direct.execute_command("CLUSTER", "REPLICATE", master_id)
+                    logger.info("CLUSTER REPLICATE %s on %s", master_id, address)
+
+            return "OK"
+        except (RedisConnectionError, ResponseError) as exc:
+            logger.error("Rejoin failed for %s: %s", address, exc)
+            raise ClusterConnectionError(self.cluster_id, exc) from exc
+
+    # ------------------------------------------------------------------
     # Slow log
     # ------------------------------------------------------------------
 
