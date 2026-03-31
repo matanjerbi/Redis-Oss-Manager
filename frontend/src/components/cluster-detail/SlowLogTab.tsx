@@ -4,9 +4,8 @@ import {
   RefreshCw, AlertTriangle, Loader2, Clock, Terminal,
   ChevronDown, ChevronUp, Gauge,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
-
-const API = "http://localhost:8000";
+import { cn, formatDuration, formatTimestamp } from "@/lib/utils";
+import { API_BASE } from "@/lib/api";
 
 interface SlowlogEntry {
   id: number;
@@ -21,20 +20,6 @@ interface Props {
   clusterId: string;
 }
 
-function formatDuration(us: number): { text: string; level: "ok" | "warn" | "danger" } {
-  if (us < 1_000) return { text: `${us} µs`, level: "ok" };
-  if (us < 10_000) return { text: `${(us / 1000).toFixed(1)} ms`, level: "warn" };
-  return { text: `${(us / 1000).toFixed(0)} ms`, level: "danger" };
-}
-
-function formatTs(ts: number): string {
-  return new Date(ts * 1000).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
 export function SlowLogTab({ clusterId }: Props) {
   const [logByNode, setLogByNode] = useState<Record<string, SlowlogEntry[]>>({});
   const [loading, setLoading] = useState(true);
@@ -46,7 +31,7 @@ export function SlowLogTab({ clusterId }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/api/clusters/${clusterId}/slowlog?count=${count}`);
+      const res = await fetch(`${API_BASE}/api/clusters/${clusterId}/slowlog?count=${count}`);
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const data: Record<string, SlowlogEntry[]> = await res.json();
       setLogByNode(data);
@@ -188,7 +173,7 @@ export function SlowLogTab({ clusterId }: Props) {
                                 {entry.id}
                               </td>
                               <td className="px-4 py-2.5 font-mono text-xs text-gray-500">
-                                {formatTs(entry.start_time)}
+                                {formatTimestamp(entry.start_time)}
                               </td>
                               <td className="px-4 py-2.5">
                                 <span className={cn(

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 from app.domain.exceptions import ClusterNotFoundError
@@ -47,8 +48,7 @@ class ClusterService:
 
     async def register_cluster(self, req: CreateClusterRequest) -> ClusterConfig:
         """Persist metadata and open the connection pool entry."""
-        from datetime import datetime
-
+        now = datetime.now(timezone.utc)
         config = ClusterConfig(
             id=0,  # filled by DB
             name=req.name,
@@ -59,8 +59,8 @@ class ClusterService:
             tls_enabled=req.tls_enabled,
             socket_timeout=req.socket_timeout,
             socket_connect_timeout=req.socket_connect_timeout,
-            created_at=datetime.utcnow(),
-            updated_at=datetime.utcnow(),
+            created_at=now,
+            updated_at=now,
         )
         saved = await self._repo.create(config)
         await self._pool.register(saved)
@@ -97,6 +97,15 @@ class ClusterService:
 
         manager = await self._pool.get(cluster_id)
         return await manager.get_topology(cluster_name=config.name)
+
+    async def scan_namespace(
+        self, cluster_id: int, prefix: str, max_keys: int = 1000
+    ) -> list[str]:
+        config = await self._repo.get_by_id(cluster_id)
+        if cluster_id not in self._pool:
+            await self._pool.register(config)
+        manager = await self._pool.get(cluster_id)
+        return await manager.scan_namespace(prefix=prefix, max_keys=max_keys)
 
     async def warmup(self) -> None:
         """

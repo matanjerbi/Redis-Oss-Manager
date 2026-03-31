@@ -1,28 +1,66 @@
 "use client";
-import { useMemo } from "react";
-import {
-  Server,
-  CheckCircle2,
-  Database,
-  HardDrive,
-  AlertTriangle,
-} from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { Server, CheckCircle2, Database, HardDrive, AlertTriangle, RefreshCw } from "lucide-react";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { ClusterSection } from "@/components/dashboard/ClusterSection";
 import { OpsChart } from "@/components/dashboard/OpsChart";
-import { mockClusters, getOverviewStats, generateMetricHistory } from "@/lib/mock-data";
+import { generateMetricHistory } from "@/lib/mock-data";
 import { formatKeys, formatBytes, formatNumber } from "@/lib/utils";
+import { API_BASE } from "@/lib/api";
+import type { ClusterTopology } from "@/lib/types";
 
 export default function OverviewPage() {
-  const stats = getOverviewStats(mockClusters);
-  const degradedClusters = mockClusters.filter((c) => c.status !== "ok");
-  // useMemo keeps data stable across re-renders without triggering hydration mismatch
+  const [clusters, setClusters] = useState<ClusterTopology[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [lastPolled, setLastPolled] = useState<Date | null>(null);
+
+  // Charts remain mock until Prometheus integration is complete
   const opsData = useMemo(() => generateMetricHistory(1800, 24), []);
   const memData = useMemo(() => generateMetricHistory(850, 24), []);
 
+  const fetchAll = async () => {
+    setLoading(true);
+    try {
+      const listRes = await fetch(`${API_BASE}/api/clusters/`);
+      if (!listRes.ok) return;
+      const configs: { id: number }[] = await listRes.json();
+
+      const topologies = await Promise.allSettled(
+        configs.map((c) =>
+          fetch(`${API_BASE}/api/clusters/${c.id}/health`).then((r) =>
+            r.ok ? (r.json() as Promise<ClusterTopology>) : null
+          )
+        )
+      );
+
+      setClusters(
+        topologies
+          .filter((r): r is PromiseFulfilledResult<ClusterTopology> => r.status === "fulfilled" && r.value !== null)
+          .map((r) => r.value)
+      );
+      setLastPolled(new Date());
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchAll();
+    const interval = setInterval(fetchAll, 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const totalNodes = clusters.reduce((s, c) => s + c.nodes.length, 0);
+  const healthyNodes = clusters.reduce((s, c) => s + c.healthy_node_count, 0);
+  const totalKeys = clusters.reduce((s, c) => s + c.total_keys, 0);
+  const totalMemMb = clusters.reduce(
+    (s, c) => s + c.nodes.reduce((ns, n) => ns + (n.metrics?.memory.used_mb ?? 0), 0),
+    0
+  );
+  const degraded = clusters.filter((c) => c.status !== "ok");
+
   return (
     <div className="flex flex-col gap-6 p-6">
-      {/* Page title */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Overview</h1>
@@ -30,37 +68,38 @@ export default function OverviewPage() {
             Real-time view across all registered Redis clusters
           </p>
         </div>
-        <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
-          <span>
-            Last polled{" "}
-            <span className="font-medium text-gray-700">just now</span>
-          </span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs text-gray-500 shadow-sm">
+            <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500" />
+            {lastPolled ? `Updated ${lastPolled.toLocaleTimeString()}` : "Loading…"}
+          </div>
+          <button
+            onClick={fetchAll}
+            className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin text-[#D2232A]" : ""}`} />
+            Refresh
+          </button>
         </div>
       </div>
 
-      {/* Alert banner for degraded clusters */}
-      {degradedClusters.length > 0 && (
+      {degraded.length > 0 && (
         <div className="flex items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3">
           <AlertTriangle className="h-4 w-4 flex-shrink-0 text-amber-600" />
           <div className="text-sm">
             <span className="font-semibold text-amber-800">
-              {degradedClusters.length} cluster{degradedClusters.length > 1 ? "s" : ""} need
-              attention:{" "}
+              {degraded.length} cluster{degraded.length > 1 ? "s" : ""} need attention:{" "}
             </span>
-            <span className="text-amber-700">
-              {degradedClusters.map((c) => c.cluster_name).join(", ")}
-            </span>
+            <span className="text-amber-700">{degraded.map((c) => c.cluster_name).join(", ")}</span>
           </div>
         </div>
       )}
 
-      {/* Key Metrics Row */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <MetricCard
           title="Total Clusters"
-          value={stats.totalClusters.toString()}
-          subValue={`${stats.healthyClusters} healthy`}
+          value={clusters.length.toString()}
+          subValue={`${clusters.filter((c) => c.status === "ok").length} healthy`}
           icon={Server}
           accent="red"
           trend="neutral"
@@ -68,80 +107,64 @@ export default function OverviewPage() {
         />
         <MetricCard
           title="Healthy Nodes"
-          value={`${stats.healthyNodes}`}
-          subValue={`of ${stats.totalNodes} total`}
+          value={healthyNodes.toString()}
+          subValue={`of ${totalNodes} total`}
           icon={CheckCircle2}
           accent="green"
-          trend={stats.healthyNodes === stats.totalNodes ? "up" : "down"}
-          trendLabel={
-            stats.healthyNodes === stats.totalNodes
-              ? "All nodes healthy"
-              : `${stats.totalNodes - stats.healthyNodes} node(s) degraded`
-          }
+          trend={healthyNodes === totalNodes ? "up" : "down"}
+          trendLabel={healthyNodes === totalNodes ? "All nodes healthy" : `${totalNodes - healthyNodes} degraded`}
         />
         <MetricCard
           title="Total Memory"
-          value={formatBytes(stats.totalMemoryMb)}
+          value={formatBytes(totalMemMb)}
           subValue="across all nodes"
           icon={HardDrive}
           accent="red"
-          trend="up"
-          trendLabel="+2.4% from last hour"
+          trend="neutral"
+          trendLabel="Live from INFO"
         />
         <MetricCard
           title="Total Keys"
-          value={formatKeys(stats.totalKeys)}
-          subValue={formatNumber(stats.totalKeys) + " keys"}
+          value={formatKeys(totalKeys)}
+          subValue={formatNumber(totalKeys) + " keys"}
           icon={Database}
           accent="blue"
-          trend="up"
-          trendLabel="+1.2% from last poll"
+          trend="neutral"
+          trendLabel="Live from INFO"
         />
       </div>
 
-      {/* Charts row */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <OpsChart
-          data={opsData}
-          title="Total Operations / sec"
-          color="#D2232A"
-          unit="ops/s"
-        />
-        <OpsChart
-          data={memData}
-          title="Memory Used (MB)"
-          color="#3B82F6"
-          unit="MB"
-        />
+        <OpsChart data={opsData} title="Total Operations / sec" color="#D2232A" unit="ops/s" />
+        <OpsChart data={memData} title="Memory Used (MB)" color="#3B82F6" unit="MB" />
       </div>
 
-      {/* Cluster Map */}
       <div>
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-gray-700">
-            Cluster Map
-          </h2>
+          <h2 className="text-sm font-semibold text-gray-700">Cluster Map</h2>
           <div className="flex items-center gap-4 text-[11px] text-gray-400">
             <span className="flex items-center gap-1">
-              <span className="inline-block h-2 w-2 rounded-full bg-[#D2232A]" />
-              Master
+              <span className="inline-block h-2 w-2 rounded-full bg-[#D2232A]" /> Master
             </span>
             <span className="flex items-center gap-1">
-              <span className="inline-block h-2 w-2 rounded-full bg-blue-400" />
-              Replica
+              <span className="inline-block h-2 w-2 rounded-full bg-blue-400" /> Replica
             </span>
             <span className="flex items-center gap-1">
-              <span className="inline-block h-2 w-2 rounded-full bg-red-400" />
-              Offline
+              <span className="inline-block h-2 w-2 rounded-full bg-red-400" /> Offline
             </span>
           </div>
         </div>
-
-        <div className="flex flex-col gap-4">
-          {mockClusters.map((cluster) => (
-            <ClusterSection key={cluster.cluster_id} cluster={cluster} />
-          ))}
-        </div>
+        {clusters.length === 0 && !loading ? (
+          <div className="rounded-xl border border-gray-200 bg-white py-16 text-center text-sm text-gray-400">
+            No clusters registered yet
+          </div>
+        ) : (
+          <div className="flex flex-col gap-4">
+            {clusters.map((cluster) => (
+              <ClusterSection key={cluster.cluster_id} cluster={cluster} />
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

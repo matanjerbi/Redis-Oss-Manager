@@ -5,8 +5,9 @@ import {
   ChevronDown, AlertTriangle, Loader2, CheckCircle2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { API_BASE } from "@/lib/api";
 
-const API = "http://localhost:8000";
+
 
 // Parameters shown prominently with type hints
 const KNOWN_PARAMS: Record<string, { type: "select" | "number" | "text"; options?: string[] }> = {
@@ -45,7 +46,7 @@ export function ConfigTab({ clusterId }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/api/clusters/${clusterId}/config?pattern=*`);
+      const res = await fetch(`${API_BASE}/api/clusters/${clusterId}/config?pattern=*`);
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const data: Record<string, NodeConfig> = await res.json();
       setConfigByNode(data);
@@ -69,7 +70,7 @@ export function ConfigTab({ clusterId }: Props) {
   const handleApply = async (param: string) => {
     setSaveState((s) => ({ ...s, [param]: "saving" }));
     try {
-      const res = await fetch(`${API}/api/clusters/${clusterId}/config`, {
+      const res = await fetch(`${API_BASE}/api/clusters/${clusterId}/config`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ parameter: param, value: edits[param] }),

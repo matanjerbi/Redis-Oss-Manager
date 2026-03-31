@@ -9,8 +9,9 @@ import { ConfigTab } from "@/components/cluster-detail/ConfigTab";
 import { SlowLogTab } from "@/components/cluster-detail/SlowLogTab";
 import { cn } from "@/lib/utils";
 import type { ClusterTopology } from "@/lib/types";
+import { API_BASE } from "@/lib/api";
 
-const API = "http://localhost:8000";
+
 
 const TABS = [
   { id: "topology", label: "Topology" },
@@ -37,7 +38,7 @@ export default function ClusterDetailPage({
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/api/clusters/${id}/health`);
+      const res = await fetch(`${API_BASE}/api/clusters/${id}/health`);
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const data: ClusterTopology = await res.json();
       setTopology(data);

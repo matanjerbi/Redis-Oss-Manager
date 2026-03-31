@@ -3,8 +3,9 @@ import { AlertTriangle, CheckCircle2, Database, HardDrive, Server } from "lucide
 import { NodeCard } from "@/components/dashboard/NodeCard";
 import { formatKeys, formatBytes, formatNumber } from "@/lib/utils";
 import type { ClusterTopology } from "@/lib/types";
+import { API_BASE } from "@/lib/api";
 
-const API = "http://localhost:8000";
+
 
 interface Props {
   topology: ClusterTopology;
@@ -15,7 +16,7 @@ export function TopologyTab({ topology, clusterId }: Props) {
   const handleFailover = async (nodeAddress: string, force: boolean) => {
     const encoded = encodeURIComponent(nodeAddress);
     const res = await fetch(
-      `${API}/api/clusters/${clusterId}/nodes/${encoded}/failover?force=${force}`,
+      `${API_BASE}/api/clusters/${clusterId}/nodes/${encoded}/failover?force=${force}`,
       { method: "POST" }
     );
     if (!res.ok) {

@@ -6,8 +6,9 @@ import {
 } from "lucide-react";
 import { AclModal, type AclFormData } from "@/components/acl/AclModal";
 import { cn } from "@/lib/utils";
+import { API_BASE } from "@/lib/api";
 
-const API = "http://localhost:8000";
+
 
 interface AclEntry {
   username: string;
@@ -60,7 +61,7 @@ export function AclTab({ clusterId }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`${API}/api/clusters/${clusterId}/acl/users`);
+      const res = await fetch(`${API_BASE}/api/clusters/${clusterId}/acl/users`);
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const lines: string[] = await res.json();
       setUsers(lines.map(parseAclLine));
@@ -74,7 +75,7 @@ export function AclTab({ clusterId }: Props) {
   useEffect(() => { fetchUsers(); }, [fetchUsers]);
 
   const handleSave = async (data: AclFormData) => {
-    const res = await fetch(`${API}/api/clusters/${clusterId}/acl/users`, {
+    const res = await fetch(`${API_BASE}/api/clusters/${clusterId}/acl/users`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -100,7 +101,7 @@ export function AclTab({ clusterId }: Props) {
     if (username === "default") return;
     setDeleting(username);
     try {
-      await fetch(`${API}/api/clusters/${clusterId}/acl/users/${username}`, {
+      await fetch(`${API_BASE}/api/clusters/${clusterId}/acl/users/${username}`, {
         method: "DELETE",
       });
       await fetchUsers();

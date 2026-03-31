@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from app.domain.models import ClusterTopology
@@ -96,7 +96,7 @@ class HealthPoller:
 
         logger.debug(
             "Health poll complete at %s for %d cluster(s)",
-            datetime.utcnow().isoformat(),
+            datetime.now(timezone.utc).isoformat(),
             len(cluster_ids),
         )
 
