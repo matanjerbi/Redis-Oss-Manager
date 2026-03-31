@@ -398,6 +398,11 @@ async def rejoin_node(
         port = int(port_str)
     except ValueError:
         raise HTTPException(status_code=422, detail=f"Invalid node address: {node_address}")
+    if not host or port == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Node has no valid address (:0 / noaddr). Use 'Forget' to remove it instead.",
+        )
     try:
         result = await svc.rejoin_node(cluster_id, host=host, port=port, master_id=master_id)
     except ClusterNotFoundError as exc:

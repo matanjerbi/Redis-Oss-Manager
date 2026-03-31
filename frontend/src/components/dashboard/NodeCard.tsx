@@ -49,7 +49,8 @@ export function NodeCard({ node, masterAddress, onFailover, onForget, onRejoin }
       node.status === "fail" ||
       node.status === "pfail");
 
-  const showRejoin = onRejoin && !node.is_healthy && ["disconnected", "fail", "pfail"].includes(node.status);
+  const hasValidAddress = node.host.length > 0 && node.port > 0;
+  const showRejoin = onRejoin && !node.is_healthy && hasValidAddress && ["disconnected", "fail", "pfail"].includes(node.status);
 
   const handleFailover = async (force: boolean) => {
     if (!onFailover) return;
