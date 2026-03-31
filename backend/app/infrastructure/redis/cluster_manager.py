@@ -211,6 +211,19 @@ class ClusterManager:
 
         parsed_nodes = self._parse_cluster_nodes(raw_nodes)
 
+        # Expand the in-process seed list with every node we now know about.
+        # This means that if the original seed goes down we can still reach
+        # the cluster via any of the other members on the next call.
+        discovered_addresses = [f"{n.host}:{n.port}" for n in parsed_nodes]
+        if discovered_addresses:
+            seen: set[str] = set()
+            merged: list[str] = []
+            for addr in self.seed_nodes + discovered_addresses:
+                if addr not in seen:
+                    seen.add(addr)
+                    merged.append(addr)
+            self.seed_nodes = merged
+
         # Fan-out INFO calls concurrently to every node
         info_tasks = {
             node.address: self._fetch_node_info(node.host, node.port)

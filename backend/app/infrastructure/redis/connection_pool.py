@@ -25,8 +25,12 @@ class ClusterManagerPool:
     async def register(self, config: ClusterConfig) -> ClusterManager:
         """
         Create (or return existing) ClusterManager for the given config.
-        Triggers the initial connection if this is a new registration.
+        The manager is stored even when the initial connection fails so that
+        subsequent health-check calls can retry against the full seed list
+        (which gets expanded as nodes are discovered).
         """
+        from app.domain.exceptions import ClusterConnectionError
+
         async with self._lock:
             if config.id in self._managers:
                 return self._managers[config.id]
@@ -39,9 +43,16 @@ class ClusterManagerPool:
                 socket_timeout=config.socket_timeout,
                 socket_connect_timeout=config.socket_connect_timeout,
             )
-            await manager.connect()
+            try:
+                await manager.connect()
+                logger.info("Registered cluster %d (%s)", config.id, config.name)
+            except ClusterConnectionError as exc:
+                logger.warning(
+                    "Cluster %d (%s) unreachable at registration — will retry on demand: %s",
+                    config.id, config.name, exc,
+                )
+            # Always store the manager so get_topology() can try later
             self._managers[config.id] = manager
-            logger.info("Registered cluster %d (%s)", config.id, config.name)
             return manager
 
     async def get(self, cluster_id: int) -> ClusterManager:

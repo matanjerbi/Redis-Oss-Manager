@@ -86,6 +86,11 @@ class ClusterService:
         """
         Return a live ClusterTopology snapshot.
 
+        After a successful fetch the full set of discovered node addresses is
+        persisted back to the database as seed_nodes so that a server restart
+        can still reach the cluster even if the originally registered seed is
+        down.
+
         Raises ClusterNotFoundError if the cluster isn't registered.
         Raises ClusterConnectionError if all seed nodes are unreachable.
         """
@@ -96,7 +101,21 @@ class ClusterService:
             await self._pool.register(config)
 
         manager = await self._pool.get(cluster_id)
-        return await manager.get_topology(cluster_name=config.name)
+        topology = await manager.get_topology(cluster_name=config.name)
+
+        # Persist all discovered node addresses so future restarts can find
+        # the cluster even when the original seed node is no longer available.
+        discovered = sorted({f"{n.host}:{n.port}" for n in topology.nodes})
+        if discovered and set(discovered) != set(config.seed_nodes):
+            try:
+                await self._repo.update(cluster_id, seed_nodes=discovered)
+            except Exception as exc:
+                logger.warning(
+                    "Could not persist discovered seeds for cluster %d: %s",
+                    cluster_id, exc,
+                )
+
+        return topology
 
     async def scan_namespace(
         self, cluster_id: int, prefix: str, max_keys: int = 1000
