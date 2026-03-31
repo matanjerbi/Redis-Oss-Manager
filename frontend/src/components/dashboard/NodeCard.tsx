@@ -1,4 +1,5 @@
 "use client";
+import { useState } from "react";
 import {
   Cpu,
   Database,
@@ -6,9 +7,13 @@ import {
   Activity,
   Clock,
   ArrowUpDown,
+  ShieldAlert,
+  Loader2,
+  CheckCircle2,
+  XCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { formatKeys, formatBytes, formatUptime, formatNumber } from "@/lib/utils";
+import { formatKeys, formatUptime, formatNumber } from "@/lib/utils";
 import { StatusDot, RoleBadge } from "@/components/ui/StatusBadge";
 import { MemoryBar } from "@/components/ui/MemoryBar";
 import type { ClusterNode } from "@/lib/types";
@@ -16,11 +21,29 @@ import type { ClusterNode } from "@/lib/types";
 interface NodeCardProps {
   node: ClusterNode;
   masterAddress?: string;
+  onFailover?: (nodeAddress: string, force: boolean) => Promise<void>;
 }
 
-export function NodeCard({ node, masterAddress }: NodeCardProps) {
+export function NodeCard({ node, masterAddress, onFailover }: NodeCardProps) {
   const m = node.metrics;
   const isReplica = node.role === "slave";
+  const [failState, setFailState] = useState<"idle" | "confirm" | "loading" | "ok" | "error">("idle");
+  const [failError, setFailError] = useState<string | null>(null);
+
+  const handleFailover = async (force: boolean) => {
+    if (!onFailover) return;
+    setFailState("loading");
+    setFailError(null);
+    try {
+      await onFailover(node.address, force);
+      setFailState("ok");
+      setTimeout(() => setFailState("idle"), 3000);
+    } catch (err) {
+      setFailError(err instanceof Error ? err.message : "Failover failed");
+      setFailState("error");
+      setTimeout(() => setFailState("idle"), 4000);
+    }
+  };
 
   return (
     <div
@@ -165,6 +188,74 @@ export function NodeCard({ node, masterAddress }: NodeCardProps) {
               </span>
             </div>
           </>
+        )}
+
+        {/* Failover — replicas only */}
+        {isReplica && onFailover && (
+          <div className="mt-3 border-t border-gray-50 pt-3">
+            {failState === "idle" && (
+              <button
+                onClick={() => setFailState("confirm")}
+                className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-gray-200 py-1.5 text-[11px] font-medium text-gray-500 transition hover:border-amber-300 hover:bg-amber-50 hover:text-amber-700"
+              >
+                <ShieldAlert className="h-3 w-3" />
+                Promote to Master
+              </button>
+            )}
+
+            {failState === "confirm" && (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5">
+                <p className="mb-2 text-[11px] font-medium text-amber-800">
+                  Promote <span className="font-mono">{node.address}</span> to master?
+                </p>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={() => handleFailover(false)}
+                    className="flex-1 rounded-md bg-amber-500 py-1 text-[11px] font-semibold text-white hover:bg-amber-600"
+                  >
+                    Failover
+                  </button>
+                  <button
+                    onClick={() => handleFailover(true)}
+                    title="Force — use when master is unreachable"
+                    className="flex-1 rounded-md border border-amber-300 py-1 text-[11px] font-semibold text-amber-700 hover:bg-amber-100"
+                  >
+                    Force
+                  </button>
+                  <button
+                    onClick={() => setFailState("idle")}
+                    className="rounded-md border border-gray-200 px-2 py-1 text-[11px] text-gray-500 hover:bg-gray-50"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {failState === "loading" && (
+              <div className="flex items-center justify-center gap-2 py-1.5 text-[11px] text-amber-600">
+                <Loader2 className="h-3 w-3 animate-spin" />
+                Negotiating failover…
+              </div>
+            )}
+
+            {failState === "ok" && (
+              <div className="flex items-center justify-center gap-1.5 py-1.5 text-[11px] font-medium text-emerald-600">
+                <CheckCircle2 className="h-3 w-3" />
+                Failover complete
+              </div>
+            )}
+
+            {failState === "error" && (
+              <div className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] text-red-700">
+                <div className="flex items-center gap-1 font-medium">
+                  <XCircle className="h-3 w-3" />
+                  Failed
+                </div>
+                {failError && <p className="mt-0.5 text-red-500">{failError}</p>}
+              </div>
+            )}
+          </div>
         )}
       </div>
     </div>

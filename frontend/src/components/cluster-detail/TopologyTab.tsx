@@ -4,11 +4,25 @@ import { NodeCard } from "@/components/dashboard/NodeCard";
 import { formatKeys, formatBytes, formatNumber } from "@/lib/utils";
 import type { ClusterTopology } from "@/lib/types";
 
+const API = "http://localhost:8000";
+
 interface Props {
   topology: ClusterTopology;
+  clusterId: string;
 }
 
-export function TopologyTab({ topology }: Props) {
+export function TopologyTab({ topology, clusterId }: Props) {
+  const handleFailover = async (nodeAddress: string, force: boolean) => {
+    const encoded = encodeURIComponent(nodeAddress);
+    const res = await fetch(
+      `${API}/api/clusters/${clusterId}/nodes/${encoded}/failover?force=${force}`,
+      { method: "POST" }
+    );
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.detail ?? `Server error ${res.status}`);
+    }
+  };
   const masters = topology.nodes.filter((n) => n.role === "master");
   const replicas = topology.nodes.filter((n) => n.role === "slave");
   const masterMap = new Map(masters.map((n) => [n.node_id, n.address]));
@@ -97,6 +111,7 @@ export function TopologyTab({ topology }: Props) {
                 key={node.node_id}
                 node={node}
                 masterAddress={node.master_id ? masterMap.get(node.master_id) : undefined}
+                onFailover={handleFailover}
               />
             ))}
           </div>

@@ -12,6 +12,7 @@ from app.application.services.acl_service import AclService
 from app.application.services.cluster_service import ClusterService
 from app.application.services.config_service import ConfigService
 from app.application.services.slowlog_service import SlowlogService
+from app.application.services.failover_service import FailoverService
 from app.infrastructure.database.repository import ClusterRepository
 from app.infrastructure.redis.connection_pool import cluster_pool
 
@@ -42,3 +43,7 @@ async def get_config_service() -> ConfigService:
 
 async def get_slowlog_service() -> SlowlogService:
     return SlowlogService(pool=cluster_pool)
+
+
+async def get_failover_service() -> FailoverService:
+    return FailoverService(pool=cluster_pool)

@@ -26,13 +26,14 @@ from app.application.services.acl_service import AclService, AclUpsertRequest
 from app.application.services.cluster_service import ClusterService, CreateClusterRequest
 from app.application.services.config_service import ConfigService
 from app.application.services.slowlog_service import SlowlogService
+from app.application.services.failover_service import FailoverService
 from app.domain.exceptions import (
     ClusterConnectionError,
     ClusterNotFoundError,
     RedisManagerError,
 )
 from app.domain.models import ClusterNode, ClusterTopology
-from app.api.dependencies import get_acl_service, get_cluster_service, get_config_service, get_slowlog_service
+from app.api.dependencies import get_acl_service, get_cluster_service, get_config_service, get_slowlog_service, get_failover_service
 
 router = APIRouter(prefix="/api/clusters", tags=["clusters"])
 
@@ -299,6 +300,41 @@ async def get_slowlog(
         return await svc.get_slowlog(cluster_id, count=count)
     except ClusterNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+# ------------------------------------------------------------------
+# Failover
+# ------------------------------------------------------------------
+
+@router.post("/{cluster_id}/nodes/{node_address}/failover")
+async def trigger_failover(
+    cluster_id: int,
+    node_address: str,
+    force: bool = Query(default=False),
+    svc: FailoverService = Depends(get_failover_service),
+):
+    """
+    Send CLUSTER FAILOVER [FORCE] to a replica node.
+
+    node_address must be in "host:port" format (URL-encoded colon is fine).
+    The replica will negotiate with its master and take over as the new primary.
+    Use force=true only when the current master is unreachable.
+    """
+    try:
+        host, port_str = node_address.rsplit(":", 1)
+        port = int(port_str)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"Invalid node address: {node_address}")
+
+    try:
+        result = await svc.failover(cluster_id, host=host, port=port, force=force)
+    except ClusterNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not result.success:
+        raise HTTPException(status_code=502, detail=result.message)
+
+    return {"success": True, "node_address": result.node_address, "message": result.message}
 
 
 # ------------------------------------------------------------------

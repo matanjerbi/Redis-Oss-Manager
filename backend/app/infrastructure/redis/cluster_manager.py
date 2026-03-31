@@ -390,6 +390,43 @@ class ClusterManager:
         return results
 
     # ------------------------------------------------------------------
+    # Failover
+    # ------------------------------------------------------------------
+
+    async def failover_node(self, host: str, port: int, force: bool = False) -> str:
+        """
+        Send CLUSTER FAILOVER [FORCE] to a specific replica node.
+
+        The command must be issued directly to the replica — it instructs
+        that node to take over as master.  Returns "OK" on success.
+        """
+        import redis.asyncio as aioredis
+
+        address = f"{host}:{port}"
+        try:
+            direct = aioredis.Redis(
+                host=host,
+                port=port,
+                password=self.password,
+                ssl=self.tls_enabled,
+                socket_timeout=self.socket_timeout,
+                decode_responses=True,
+            )
+            async with direct:
+                args = ["FORCE"] if force else []
+                result = await direct.execute_command("CLUSTER", "FAILOVER", *args)
+                logger.info(
+                    "CLUSTER FAILOVER%s on %s: %s",
+                    " FORCE" if force else "",
+                    address,
+                    result,
+                )
+                return str(result)
+        except (RedisConnectionError, ResponseError) as exc:
+            logger.error("CLUSTER FAILOVER failed on %s: %s", address, exc)
+            raise ClusterConnectionError(self.cluster_id, exc) from exc
+
+    # ------------------------------------------------------------------
     # Slow log
     # ------------------------------------------------------------------
 
