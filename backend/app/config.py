@@ -10,6 +10,10 @@ class Settings(BaseSettings):
     # PostgreSQL
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/redis_manager"
 
+    # Prometheus
+    prometheus_url: str = "http://localhost:9090"
+    prometheus_default_job: str = "redis_cluster"
+
     # Health poller
     health_poll_interval: float = 30.0
 

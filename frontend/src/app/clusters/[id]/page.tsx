@@ -7,6 +7,7 @@ import { TopologyTab } from "@/components/cluster-detail/TopologyTab";
 import { AclTab } from "@/components/cluster-detail/AclTab";
 import { ConfigTab } from "@/components/cluster-detail/ConfigTab";
 import { SlowLogTab } from "@/components/cluster-detail/SlowLogTab";
+import { MetricsTab } from "@/components/cluster-detail/MetricsTab";
 import { cn } from "@/lib/utils";
 import type { ClusterTopology } from "@/lib/types";
 import { API_BASE } from "@/lib/api";
@@ -18,6 +19,7 @@ const TABS = [
   { id: "acl", label: "ACL Users" },
   { id: "config", label: "Configuration" },
   { id: "slowlog", label: "Slow Log" },
+  { id: "metrics", label: "Metrics" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -132,6 +134,7 @@ export default function ClusterDetailPage({
           {activeTab === "acl" && <AclTab clusterId={id} />}
           {activeTab === "config" && <ConfigTab clusterId={id} />}
           {activeTab === "slowlog" && <SlowLogTab clusterId={id} />}
+          {activeTab === "metrics" && <MetricsTab clusterId={id} />}
         </>
       )}
     </div>
