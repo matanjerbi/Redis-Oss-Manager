@@ -73,9 +73,13 @@ class ClusterManagerPool:
     async def close_all(self) -> None:
         """Gracefully close every open connection (called on app shutdown)."""
         async with self._lock:
-            ids = list(self._managers.keys())
-        for cid in ids:
-            await self.deregister(cid)
+            managers = list(self._managers.values())
+            self._managers.clear()
+        for manager in managers:
+            try:
+                await manager.disconnect()
+            except Exception as exc:
+                logger.warning("Error disconnecting cluster %d: %s", manager.cluster_id, exc)
 
     def __contains__(self, cluster_id: int) -> bool:
         return cluster_id in self._managers

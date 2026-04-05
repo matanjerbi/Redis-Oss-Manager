@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from types import SimpleNamespace
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator
@@ -30,9 +31,7 @@ from redis.exceptions import (
 )
 
 from app.domain.exceptions import (
-    AclOperationError,
     ClusterConnectionError,
-    ConfigOperationError,
     NodeUnreachableError,
 )
 from app.domain.models import (
@@ -148,8 +147,11 @@ class ClusterManager:
                     self.cluster_id, seed,
                 )
                 return
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Cluster %s: seed %s not reachable via direct connection: %s",
+                    self.cluster_id, seed, exc,
+                )
 
         raise ClusterConnectionError(self.cluster_id, last_exc) from last_exc
 
@@ -163,19 +165,21 @@ class ClusterManager:
     @asynccontextmanager
     async def _get_client(self) -> AsyncIterator[RedisCluster]:
         """Yield a ready client, reconnecting once if the connection was lost."""
-        if self._client is None:
-            await self.connect()
-        try:
-            yield self._client  # type: ignore[misc]
-        except (RedisConnectionError, RedisTimeoutError) as exc:
-            logger.warning(
-                "Connection lost to cluster %s — reconnecting: %s",
-                self.cluster_id,
-                exc,
-            )
-            await self.disconnect()
-            await self.connect()
-            yield self._client  # type: ignore[misc]
+        for attempt in range(2):
+            if self._client is None:
+                await self.connect()
+            try:
+                yield self._client  # type: ignore[misc]
+                return
+            except (RedisConnectionError, RedisTimeoutError) as exc:
+                if attempt == 1:
+                    raise
+                logger.warning(
+                    "Connection lost to cluster %s — reconnecting: %s",
+                    self.cluster_id,
+                    exc,
+                )
+                await self.disconnect()
 
     def _make_direct_conn(self, host: str, port: int) -> aioredis.Redis:
         """Return a single-node async Redis connection using this cluster's credentials."""
@@ -226,8 +230,11 @@ class ClusterManager:
                         if ihost != seed_host or int(iport_str) != seed_port:
                             new_map[internal_addr] = (seed_host, seed_port)
                         break
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "Cluster %s: could not query CLUSTER NODES from seed %s for address map: %s",
+                    self.cluster_id, seed, exc,
+                )
         if new_map:
             self._addr_remap = new_map
             logger.debug(
@@ -376,7 +383,6 @@ class ClusterManager:
                     exc,
                 )
                 results[address] = str(exc)
-                raise AclOperationError(rule.username, address, exc) from exc
 
         await asyncio.gather(
             *[_set_on_node(n) for n in nodes],
@@ -442,7 +448,6 @@ class ClusterManager:
                     exc,
                 )
                 results[address] = str(exc)
-                raise ConfigOperationError(parameter, address, exc) from exc
 
         await asyncio.gather(
             *[_set_cfg_on_node(n) for n in nodes],
@@ -587,6 +592,8 @@ class ClusterManager:
         # Step 1: meet
         async with self._get_client() as client:
             nodes: list[RedisClusterNode] = list(client.get_nodes())
+        if not nodes:
+            raise ClusterConnectionError(self.cluster_id, Exception("No nodes available to issue CLUSTER MEET"))
         meet_node = nodes[0]
         async with self._make_direct_conn(meet_node.host, meet_node.port) as conn:
             await conn.execute_command("CLUSTER", "MEET", host, str(port))
@@ -627,6 +634,8 @@ class ClusterManager:
         # Step 1: meet
         async with self._get_client() as client:
             existing_nodes: list[RedisClusterNode] = list(client.get_nodes())
+        if not existing_nodes:
+            raise ClusterConnectionError(self.cluster_id, Exception("No nodes available to issue CLUSTER MEET"))
         meet_node = existing_nodes[0]
         async with self._make_direct_conn(meet_node.host, meet_node.port) as conn:
             await conn.execute_command("CLUSTER", "MEET", host, str(port))
@@ -732,7 +741,7 @@ class ClusterManager:
                     if len(parts2) >= 2 and parts2[0] == source_id:
                         addr = parts2[1].split("@")[0]
                         sh, sp = addr.rsplit(":", 1)
-                        source_node = type("N", (), {"host": sh, "port": int(sp)})()
+                        source_node = SimpleNamespace(host=sh, port=int(sp))
                         break
 
             if source_node is None:

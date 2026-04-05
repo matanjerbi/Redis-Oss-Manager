@@ -80,7 +80,7 @@ class ClusterService:
                 saved = await self._repo.update(saved.id, seed_nodes=reachable)
                 logger.info(
                     "Cluster '%s' — persisted %d discovered nodes as seeds",
-                    saved.name, len(all_nodes),
+                    saved.name, len(reachable),
                 )
         except Exception as exc:
             logger.warning(

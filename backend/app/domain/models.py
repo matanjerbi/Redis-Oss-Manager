@@ -12,7 +12,8 @@ from typing import Optional
 
 class NodeRole(str, Enum):
     MASTER = "master"
-    SLAVE = "slave"
+    SLAVE = "slave"      # kept for backward compatibility
+    REPLICA = "replica"  # preferred alias
     UNKNOWN = "unknown"
 
 
