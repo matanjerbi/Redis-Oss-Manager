@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import {
+  AlertTriangle,
   Cpu,
   Database,
   Users,
@@ -42,12 +43,16 @@ export function NodeCard({ node, masterAddress, onFailover, onForget, onRejoin }
   const [rejoinError, setRejoinError] = useState<string | null>(null);
 
   // Determine whether to show Forget and Rejoin buttons
+  const isEmptyMaster = node.role === "master" && node.slot_count === 0;
   const showForget =
     onForget &&
-    !node.is_healthy &&
-    (node.flags.some((f) => f === "fail" || f === "noaddr") ||
-      node.status === "fail" ||
-      node.status === "pfail");
+    (isEmptyMaster ||
+      (!node.is_healthy &&
+        (node.flags.some((f) => f === "fail" || f === "noaddr") ||
+          node.status === "fail" ||
+          node.status === "pfail")));
+  // Warning shown on healthy masters with no slots
+  const showEmptyMasterWarning = isEmptyMaster && node.is_healthy;
 
   const hasValidAddress = node.host.length > 0 && node.port > 0;
   const showRejoin = onRejoin && !node.is_healthy && hasValidAddress && ["disconnected", "fail", "pfail"].includes(node.status);
@@ -102,7 +107,9 @@ export function NodeCard({ node, masterAddress, onFailover, onForget, onRejoin }
       className={cn(
         "group relative rounded-xl border bg-white shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md",
         node.is_healthy
-          ? "border-gray-200"
+          ? isEmptyMaster
+            ? "border-amber-200 bg-amber-50/20"
+            : "border-gray-200"
           : node.status === "disconnected"
           ? "border-red-200 bg-red-50/30"
           : "border-amber-200"
@@ -113,7 +120,9 @@ export function NodeCard({ node, masterAddress, onFailover, onForget, onRejoin }
         className={cn(
           "absolute inset-y-0 left-0 w-0.5 rounded-l-xl",
           node.is_healthy
-            ? isReplica
+            ? isEmptyMaster
+              ? "bg-amber-400"
+              : isReplica
               ? "bg-blue-400"
               : "bg-[#D2232A]"
             : node.status === "disconnected"
@@ -164,11 +173,22 @@ export function NodeCard({ node, masterAddress, onFailover, onForget, onRejoin }
           </div>
         </div>
 
+        {/* Empty master warning */}
+        {showEmptyMasterWarning && (
+          <div className="mt-2 flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[11px] text-amber-700">
+            <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+            No slots assigned — this master can be safely removed
+          </div>
+        )}
+
         {/* Forget confirm dialog */}
         {showForget && forgetState === "confirm" && (
           <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-2.5">
             <p className="mb-2 text-[11px] font-medium text-red-800">
-              Forget <span className="font-mono">{node.node_id.slice(0, 8)}…</span> from the cluster?
+              {showEmptyMasterWarning
+                ? <>Remove idle master <span className="font-mono">{node.address}</span> from the cluster?</>
+                : <>Forget <span className="font-mono">{node.node_id.slice(0, 8)}…</span> from the cluster?</>
+              }
             </p>
             <div className="flex gap-1.5">
               <button

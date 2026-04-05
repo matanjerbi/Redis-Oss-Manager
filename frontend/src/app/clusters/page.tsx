@@ -29,27 +29,28 @@ export default function ClustersPage() {
       if (!res.ok) throw new Error(`API error ${res.status}`);
       const configs: ClusterConfig[] = await res.json();
 
-      // Fetch health for each cluster in parallel
-      const topoResults = await Promise.allSettled(
-        configs.map((c) =>
-          fetch(`${API_BASE}/api/clusters/${c.id}/health`).then((r) =>
-            r.ok ? r.json() : null
-          )
-        )
-      );
+      // Show all clusters immediately with null topology (no waiting)
+      setRows(configs.map((config) => ({ config, topology: null })));
+      setLoading(false);
 
-      setRows(
-        configs.map((config, i) => ({
-          config,
-          topology:
-            topoResults[i].status === "fulfilled"
-              ? (topoResults[i] as PromiseFulfilledResult<ClusterTopology | null>).value
-              : null,
-        }))
+      // Fetch each cluster's health independently — update each row as it arrives
+      // so a slow/unreachable cluster never blocks the display of healthy ones.
+      await Promise.allSettled(
+        configs.map((c) =>
+          fetch(`${API_BASE}/api/clusters/${c.id}/health`)
+            .then((r) => (r.ok ? (r.json() as Promise<ClusterTopology>) : null))
+            .then((topology) => {
+              setRows((prev) =>
+                prev.map((row) =>
+                  row.config.id === c.id ? { ...row, topology: topology ?? null } : row
+                )
+              );
+            })
+            .catch(() => null)
+        )
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load clusters");
-    } finally {
       setLoading(false);
     }
   }, []);

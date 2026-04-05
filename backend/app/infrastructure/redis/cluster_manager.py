@@ -86,6 +86,10 @@ class ClusterManager:
         self.socket_connect_timeout = socket_connect_timeout
 
         self._client: RedisCluster | None = None
+        # Maps internal node address (host:port) → reachable (host, port) via seed.
+        # Populated when nodes report internal IPs that differ from the seed addresses,
+        # e.g. when connecting through Kubernetes port-forwards.
+        self._addr_remap: dict[str, tuple[str, int]] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -120,12 +124,32 @@ class ClusterManager:
                 self._client = client
                 logger.info("Connected to cluster %s via %s", self.cluster_id, seed)
                 return
-            except (RedisConnectionError, RedisClusterException) as exc:
+            except (RedisConnectionError, RedisClusterException, RedisTimeoutError) as exc:
                 logger.warning(
                     "Could not connect to cluster %s via seed %s: %s",
                     self.cluster_id, seed, exc,
                 )
                 last_exc = exc
+
+        # Full RedisCluster init failed (e.g. K8s port-forward: some nodes are
+        # unreachable internal IPs).  Fall back to verifying that at least one
+        # seed is reachable via a plain single-node connection.  In this mode
+        # _client stays None; get_topology still works (uses direct connections),
+        # but cluster-wide write operations (ACL, CONFIG) are unavailable.
+        for seed in self.seed_nodes:
+            seed_host, seed_port_str = seed.rsplit(":", 1)
+            try:
+                direct = self._make_direct_conn(seed_host, int(seed_port_str))
+                async with direct:
+                    await direct.ping()
+                logger.warning(
+                    "Cluster %s: RedisCluster init failed but seed %s is reachable — "
+                    "operating in topology-only mode (write operations unavailable)",
+                    self.cluster_id, seed,
+                )
+                return
+            except Exception:
+                pass
 
         raise ClusterConnectionError(self.cluster_id, last_exc) from last_exc
 
@@ -169,6 +193,49 @@ class ClusterManager:
     # Topology & health
     # ------------------------------------------------------------------
 
+    async def _build_address_map(self) -> None:
+        """
+        For each registered seed, connect and identify the node it actually
+        represents via the 'myself' flag in CLUSTER NODES.  Build a mapping
+        from the node's self-reported (possibly internal/pod) address to the
+        reachable seed address.
+
+        This is important for Kubernetes port-forward deployments where Redis
+        nodes advertise internal pod IPs that are not reachable from outside
+        the cluster.
+        """
+        new_map: dict[str, tuple[str, int]] = {}
+        for seed in self.seed_nodes:
+            seed_host, seed_port_str = seed.rsplit(":", 1)
+            seed_port = int(seed_port_str)
+            try:
+                direct = self._make_direct_conn(seed_host, seed_port)
+                async with direct:
+                    raw = await direct.execute_command("CLUSTER NODES")
+                if not isinstance(raw, str):
+                    continue
+                for line in raw.strip().splitlines():
+                    parts = line.split()
+                    if len(parts) < 3:
+                        continue
+                    flags = parts[2]
+                    if "myself" in flags:
+                        # parts[1] is "ip:port@busport,hostname" — take ip:port
+                        internal_addr = parts[1].split("@")[0]
+                        ihost, iport_str = internal_addr.rsplit(":", 1)
+                        if ihost != seed_host or int(iport_str) != seed_port:
+                            new_map[internal_addr] = (seed_host, seed_port)
+                        break
+            except Exception:
+                pass
+        if new_map:
+            self._addr_remap = new_map
+            logger.debug(
+                "Cluster %s address map: %s",
+                self.cluster_id,
+                {k: f"{v[0]}:{v[1]}" for k, v in new_map.items()},
+            )
+
     async def get_topology(self, cluster_name: str) -> ClusterTopology:
         """
         Return a fully-populated ClusterTopology by combining:
@@ -211,31 +278,40 @@ class ClusterManager:
 
         parsed_nodes = self._parse_cluster_nodes(raw_nodes)
 
-        # Expand the in-process seed list with every node we now know about.
-        # This means that if the original seed goes down we can still reach
-        # the cluster via any of the other members on the next call.
-        discovered_addresses = [f"{n.host}:{n.port}" for n in parsed_nodes]
-        if discovered_addresses:
-            seen: set[str] = set()
-            merged: list[str] = []
-            for addr in self.seed_nodes + discovered_addresses:
-                if addr not in seen:
-                    seen.add(addr)
-                    merged.append(addr)
-            self.seed_nodes = merged
+        # Build a seed→internal-IP address map so that port-forwarded seeds
+        # (e.g. Kubernetes) are used in place of unreachable pod IPs.
+        # Must run before seed expansion so we know which addresses to exclude.
+        await self._build_address_map()
 
-        # Fan-out INFO calls concurrently to every node
-        info_tasks = {
-            node.address: self._fetch_node_info(node.host, node.port)
-            for node in parsed_nodes
-        }
+        # Expand the in-process seed list with every node we now know about.
+        # When _addr_remap is populated the cluster is behind a NAT / port-forward
+        # (e.g. Kubernetes): all discovered node addresses are internal and not
+        # directly reachable, so we keep only the explicitly registered seeds.
+        if not self._addr_remap:
+            discovered_addresses = [f"{n.host}:{n.port}" for n in parsed_nodes]
+            if discovered_addresses:
+                seen: set[str] = set()
+                merged: list[str] = []
+                for addr in self.seed_nodes + discovered_addresses:
+                    if addr not in seen:
+                        seen.add(addr)
+                        merged.append(addr)
+                self.seed_nodes = merged
+
+        # Fan-out INFO calls — remap internal addresses to reachable ones when known
+        def _reachable(host: str, port: int) -> tuple[str, int]:
+            return self._addr_remap.get(f"{host}:{port}", (host, port))
+
+        addresses = [node.address for node in parsed_nodes]
+        coros = [self._fetch_node_info(*_reachable(node.host, node.port)) for node in parsed_nodes]
+        results = await asyncio.gather(*coros, return_exceptions=True)
         info_results: dict[str, dict[str, Any]] = {}
-        for address, coro in info_tasks.items():
-            try:
-                info_results[address] = await coro
-            except NodeUnreachableError as exc:
-                logger.warning("Could not fetch INFO from %s: %s", address, exc)
+        for address, result in zip(addresses, results):
+            if isinstance(result, Exception):
+                logger.warning("Could not fetch INFO from %s: %s", address, result)
                 info_results[address] = {}
+            else:
+                info_results[address] = result
 
         # Attach metrics to each node
         for node in parsed_nodes:
@@ -582,6 +658,32 @@ class ClusterManager:
             )
         logger.info("New node %s has id %s", address, new_node_id)
 
+        # Wait for gossip to propagate new_node_id to all existing masters
+        # before issuing CLUSTER SETSLOT MIGRATING (which requires the target id to be known)
+        master_hosts = [
+            (n.host, n.port) for n in existing_nodes
+            if getattr(n, "server_type", None) == "primary"
+            or "master" in getattr(n, "flags", "")
+        ] or [(existing_nodes[0].host, existing_nodes[0].port)]
+        for _ in range(20):
+            await asyncio.sleep(1.0)
+            known_everywhere = True
+            for mh, mp in master_hosts:
+                try:
+                    async with self._make_direct_conn(mh, mp) as conn:
+                        raw_check = await conn.execute_command("CLUSTER", "NODES")
+                    if new_node_id not in (raw_check if isinstance(raw_check, str) else ""):
+                        known_everywhere = False
+                        break
+                except Exception:
+                    known_everywhere = False
+                    break
+            if known_everywhere:
+                logger.info("New node %s is known by all masters, proceeding with migration", new_node_id)
+                break
+        else:
+            logger.warning("Timed out waiting for gossip propagation of %s; proceeding anyway", new_node_id)
+
         # Step 3: calculate slots per master after adding new node
         # Get current master->slots mapping from CLUSTER NODES
         master_slots: dict[str, list[int]] = {}  # node_id -> list of slot numbers
@@ -669,11 +771,27 @@ class ClusterManager:
         all_nodes: list,
     ) -> None:
         """Migrate a single slot from source to target."""
-        async with self._make_direct_conn(source_host, source_port) as src:
-            await src.execute_command("CLUSTER", "SETSLOT", slot, "MIGRATING", target_id)
+        for attempt in range(10):
+            try:
+                async with self._make_direct_conn(source_host, source_port) as src:
+                    await src.execute_command("CLUSTER", "SETSLOT", slot, "MIGRATING", target_id)
+                break
+            except ResponseError as exc:
+                if "I don't know about node" in str(exc) and attempt < 9:
+                    await asyncio.sleep(1.0)
+                    continue
+                raise
 
-        async with self._make_direct_conn(target_host, target_port) as tgt:
-            await tgt.execute_command("CLUSTER", "SETSLOT", slot, "IMPORTING", source_id)
+        for attempt in range(10):
+            try:
+                async with self._make_direct_conn(target_host, target_port) as tgt:
+                    await tgt.execute_command("CLUSTER", "SETSLOT", slot, "IMPORTING", source_id)
+                break
+            except ResponseError as exc:
+                if "I don't know about node" in str(exc) and attempt < 9:
+                    await asyncio.sleep(1.0)
+                    continue
+                raise
 
         # Migrate all keys in this slot
         async with self._make_direct_conn(source_host, source_port) as src:

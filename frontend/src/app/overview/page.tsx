@@ -29,40 +29,49 @@ export default function OverviewPage() {
 
   const fetchAll = async () => {
     setLoading(true);
+    setClusters([]);
     try {
       const listRes = await fetch(`${API_BASE}/api/clusters/`);
       if (!listRes.ok) return;
       const configs: { id: number }[] = await listRes.json();
 
-      const [topologies, firstMetrics] = await Promise.all([
-        Promise.allSettled(
-          configs.map((c) =>
-            fetch(`${API_BASE}/api/clusters/${c.id}/health`).then((r) =>
-              r.ok ? (r.json() as Promise<ClusterTopology>) : null
-            )
-          )
-        ),
-        configs[0]
-          ? fetch(`${API_BASE}/api/clusters/${configs[0].id}/metrics?range=3600`)
-              .then((r) => (r.ok ? (r.json() as Promise<MetricsResponse>) : null))
-              .catch(() => null)
-          : Promise.resolve(null),
-      ]);
-
-      setClusters(
-        topologies
-          .filter((r): r is PromiseFulfilledResult<ClusterTopology> => r.status === "fulfilled" && r.value !== null)
-          .map((r) => r.value)
-      );
-
-      if (firstMetrics) {
-        const opsSeries = firstMetrics.series.find((s) => s.name === "ops_per_sec");
-        const memSeries = firstMetrics.series.find((s) => s.name === "memory_used_bytes");
-        setOpsData(toChartPoints(opsSeries));
-        setMemData(
-          toChartPoints(memSeries).map((p) => ({ ...p, value: p.value / 1_048_576 }))
-        );
+      // Fetch metrics for the first cluster in parallel with health checks
+      if (configs[0]) {
+        fetch(`${API_BASE}/api/clusters/${configs[0].id}/metrics?range=3600`)
+          .then((r) => (r.ok ? (r.json() as Promise<MetricsResponse>) : null))
+          .then((firstMetrics) => {
+            if (!firstMetrics) return;
+            const opsSeries = firstMetrics.series.find((s) => s.name === "ops_per_sec");
+            const memSeries = firstMetrics.series.find((s) => s.name === "memory_used_bytes");
+            setOpsData(toChartPoints(opsSeries));
+            setMemData(
+              toChartPoints(memSeries).map((p) => ({ ...p, value: p.value / 1_048_576 }))
+            );
+          })
+          .catch(() => null);
       }
+
+      // Fetch each cluster's health independently — show each as it arrives
+      // so a slow/unreachable cluster never blocks the display of healthy ones.
+      await Promise.allSettled(
+        configs.map((c) =>
+          fetch(`${API_BASE}/api/clusters/${c.id}/health`)
+            .then((r) => (r.ok ? (r.json() as Promise<ClusterTopology>) : null))
+            .then((topology) => {
+              if (!topology) return;
+              setClusters((prev) => {
+                const idx = prev.findIndex((p) => p.cluster_id === topology.cluster_id);
+                if (idx >= 0) {
+                  const updated = [...prev];
+                  updated[idx] = topology;
+                  return updated;
+                }
+                return [...prev, topology];
+              });
+            })
+            .catch(() => null)
+        )
+      );
 
       setLastPolled(new Date());
     } finally {

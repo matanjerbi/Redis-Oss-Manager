@@ -3,6 +3,7 @@ FastAPI application factory and dependency injection wiring.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -55,11 +56,24 @@ async def lifespan(app: FastAPI):
         await conn.run_sync(Base.metadata.create_all)
         logger.info("Database schema ensured")
 
+    # Load cluster configs from DB (fast), then connect in the background so
+    # a slow or unreachable cluster never delays the server from starting.
     async with AsyncSessionLocal() as session:
         async with session.begin():
             repo = ClusterRepository(session)
-            svc = ClusterService(repository=repo, pool=cluster_pool)
-            await svc.warmup()
+            configs = await repo.list_all()
+
+    async def _bg_warmup() -> None:
+        for config in configs:
+            try:
+                await cluster_pool.register(config)
+            except Exception as exc:
+                logger.warning(
+                    "Could not connect to cluster '%s' at startup: %s",
+                    config.name, exc,
+                )
+
+    asyncio.create_task(_bg_warmup())
 
     health_poller.start()
     logger.info("Application started")

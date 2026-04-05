@@ -73,10 +73,11 @@ class ClusterService:
         # goes down.
         try:
             manager = await self._pool.get(saved.id)
-            topology = await manager.get_topology(cluster_name=saved.name)
-            all_nodes = sorted({f"{n.host}:{n.port}" for n in topology.nodes})
-            if all_nodes and set(all_nodes) != set(saved.seed_nodes):
-                saved = await self._repo.update(saved.id, seed_nodes=all_nodes)
+            await manager.get_topology(cluster_name=saved.name)
+            # Use manager.seed_nodes — excludes internal/NAT addresses (e.g. K8s pod IPs)
+            reachable = sorted(set(manager.seed_nodes))
+            if reachable and set(reachable) != set(saved.seed_nodes):
+                saved = await self._repo.update(saved.id, seed_nodes=reachable)
                 logger.info(
                     "Cluster '%s' — persisted %d discovered nodes as seeds",
                     saved.name, len(all_nodes),
@@ -142,12 +143,12 @@ class ClusterService:
         manager = await self._pool.get(cluster_id)
         topology = await manager.get_topology(cluster_name=config.name)
 
-        # Persist all discovered node addresses so future restarts can find
-        # the cluster even when the original seed node is no longer available.
-        discovered = sorted({f"{n.host}:{n.port}" for n in topology.nodes})
-        if discovered and set(discovered) != set(config.seed_nodes):
+        # Persist the manager's reachable seed list (excludes internal/NAT
+        # addresses such as Kubernetes pod IPs that aren't accessible externally).
+        reachable = sorted(set(manager.seed_nodes))
+        if reachable and set(reachable) != set(config.seed_nodes):
             try:
-                await self._repo.update(cluster_id, seed_nodes=discovered)
+                await self._repo.update(cluster_id, seed_nodes=reachable)
             except Exception as exc:
                 logger.warning(
                     "Could not persist discovered seeds for cluster %d: %s",

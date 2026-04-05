@@ -69,12 +69,23 @@ export function RegisterClusterModal({ onClose, onSave }: Props) {
     }
   };
 
-  const updateSeed = (i: number, val: string) =>
+  const updateSeed = (i: number, val: string) => {
+    // If the value contains commas or spaces between addresses, split into multiple fields
+    const parts = val.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+    if (parts.length > 1) {
+      setForm((f) => {
+        const nodes = [...f.seed_nodes];
+        nodes.splice(i, 1, ...parts);
+        return { ...f, seed_nodes: nodes };
+      });
+      return;
+    }
     setForm((f) => {
       const nodes = [...f.seed_nodes];
       nodes[i] = val;
       return { ...f, seed_nodes: nodes };
     });
+  };
 
   const addSeed = () => setForm((f) => ({ ...f, seed_nodes: [...f.seed_nodes, ""] }));
 
