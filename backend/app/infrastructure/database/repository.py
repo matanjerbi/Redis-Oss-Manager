@@ -52,8 +52,9 @@ class ClusterRepository:
         if row is None:
             raise ClusterNotFoundError(cluster_id)
         for key, value in kwargs.items():
-            if hasattr(row, key):
-                setattr(row, key, value)
+            if not hasattr(row, key):
+                raise ValueError(f"ClusterORM has no attribute '{key}'")
+            setattr(row, key, value)
         await self._session.flush()
         await self._session.refresh(row)
         return row.to_domain()

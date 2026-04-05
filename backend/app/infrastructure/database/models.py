@@ -29,7 +29,7 @@ class ClusterORM(Base):
     description = Column(Text, nullable=True)
     tenant_id = Column(String(64), nullable=False, index=True)
     seed_nodes = Column(ARRAY(String), nullable=False)
-    password = Column(String(256), nullable=True)       # stored encrypted
+    password = Column(String(256), nullable=True)
     tls_enabled = Column(Boolean, default=False, nullable=False)
     socket_timeout = Column(Float, default=5.0, nullable=False)
     socket_connect_timeout = Column(Float, default=5.0, nullable=False)
